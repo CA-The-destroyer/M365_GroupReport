@@ -1,12 +1,16 @@
-# Identity Audit v1
+# Identity Audit v2
 
 This branch adds a Microsoft Graph-based identity audit script while leaving the original `M365GroupReport.ps1` unchanged.
 
-## Script
+## Versioned script name
+
+Use the versioned entrypoint:
 
 ```powershell
-.\IdentityAudit.Graph.ps1
+.\IdentityAudit.Graph_V2.ps1
 ```
+
+`IdentityAudit.Graph_V2.ps1` includes a Windows PowerShell compatibility shim for `ConvertFrom-Json -Depth` and then invokes the core implementation.
 
 ## Purpose
 
@@ -43,13 +47,13 @@ Enabled user members in the group / all enabled users observed in the run * 100
 ## Interactive run
 
 ```powershell
-.\IdentityAudit.Graph.ps1 -InstallModules -OpenDashboard
+.\IdentityAudit.Graph_V2.ps1 -InstallModules -OpenDashboard
 ```
 
 ## App-only certificate run
 
 ```powershell
-.\IdentityAudit.Graph.ps1 `
+.\IdentityAudit.Graph_V2.ps1 `
   -TenantId "<tenant-id>" `
   -ClientId "<app-id>" `
   -CertificateThumbprint "<thumbprint>" `
@@ -60,13 +64,13 @@ Enabled user members in the group / all enabled users observed in the run * 100
 ## Useful filters
 
 ```powershell
-.\IdentityAudit.Graph.ps1 -SecurityOnly
-.\IdentityAudit.Graph.ps1 -Microsoft365Only
-.\IdentityAudit.Graph.ps1 -MailEnabledSecurityOnly
-.\IdentityAudit.Graph.ps1 -DistributionListOnly
-.\IdentityAudit.Graph.ps1 -MinGroupMembersCount 50
-.\IdentityAudit.Graph.ps1 -HighDensityPctThreshold 2.5
-.\IdentityAudit.Graph.ps1 -GroupIdsFile .\GroupIds.txt
+.\IdentityAudit.Graph_V2.ps1 -SecurityOnly
+.\IdentityAudit.Graph_V2.ps1 -Microsoft365Only
+.\IdentityAudit.Graph_V2.ps1 -MailEnabledSecurityOnly
+.\IdentityAudit.Graph_V2.ps1 -DistributionListOnly
+.\IdentityAudit.Graph_V2.ps1 -MinGroupMembersCount 50
+.\IdentityAudit.Graph_V2.ps1 -HighDensityPctThreshold 2.5
+.\IdentityAudit.Graph_V2.ps1 -GroupIdsFile .\GroupIds.txt
 ```
 
 ## Dashboard sections
