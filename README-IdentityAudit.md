@@ -1,4 +1,4 @@
-# Identity Audit v9
+# Identity Audit v10
 
 This branch adds a Microsoft Graph-based identity audit script while leaving the original `M365GroupReport.ps1` unchanged.
 
@@ -7,17 +7,23 @@ This branch adds a Microsoft Graph-based identity audit script while leaving the
 Use the current versioned entrypoint:
 
 ```powershell
-.\IdentityAudit.Graph_V9.ps1
+.\IdentityAudit.Graph_V10.ps1
 ```
 
-`IdentityAudit.Graph_V9.ps1` patches the V7 graph analytics runtime copy so dependency resolution stays anchored to the original repository folder instead of `%TEMP%`. It also includes the V8 `Sort-Object` parser fix.
+`IdentityAudit.Graph_V10.ps1` is self-contained. It does not depend on V6, V7, V8, V9, or a temporary runtime patch chain.
 
-`IdentityAudit.Graph_V8.ps1` remains available as a compatibility launcher and forwards to V9.
+`IdentityAudit.Graph_V9.ps1` remains available as a compatibility launcher and forwards to V10.
 
-## What V9 adds
+## What V10 includes
 
-V9 creates graph-analysis outputs for identity governance review:
+V10 includes collection, caching, standard evidence output, standard dashboard output, and graph-analysis output in one script:
 
+- Microsoft Graph collection
+- Cache-aware execution
+- Identity users/groups/members/owners CSV evidence
+- Department/group matrix
+- Group density metrics
+- Exception review
 - Identity nodes
 - Relationship edges
 - Group nesting edges
@@ -30,7 +36,7 @@ V9 creates graph-analysis outputs for identity governance review:
 
 ## Graph output files
 
-Each V9 run adds these files to the normal timestamped output folder:
+Each V10 run adds these files to the normal timestamped output folder:
 
 - `IdentityAudit-Nodes.csv`
 - `IdentityAudit-Edges.csv`
@@ -57,38 +63,38 @@ Default cache age:
 
 That is 7 days.
 
-V9 passes cache controls through to V6. Cache is reused by default when cache files exist and are still fresh. Missing or expired cache files are refreshed automatically unless `-UseCacheOnly` is used.
+V10 reuses cache by default when cache files exist and are still fresh. Missing or expired cache files are refreshed automatically unless `-UseCacheOnly` is used.
 
 ## Common runs
 
 First full run, refresh everything and open the graph dashboard:
 
 ```powershell
-.\IdentityAudit.Graph_V9.ps1 -InstallModules -RefreshAll -OpenDashboard
+.\IdentityAudit.Graph_V10.ps1 -InstallModules -RefreshAll -OpenDashboard
 ```
 
 Normal run, reuse fresh cache and refresh only missing/expired cache:
 
 ```powershell
-.\IdentityAudit.Graph_V9.ps1 -OpenDashboard
+.\IdentityAudit.Graph_V10.ps1 -OpenDashboard
 ```
 
 Force cache-only graph analysis without connecting to Graph:
 
 ```powershell
-.\IdentityAudit.Graph_V9.ps1 -UseCacheOnly -OpenDashboard
+.\IdentityAudit.Graph_V10.ps1 -UseCacheOnly -OpenDashboard
 ```
 
 Refresh memberships only, then rebuild graph analytics:
 
 ```powershell
-.\IdentityAudit.Graph_V9.ps1 -RefreshMemberships -OpenDashboard
+.\IdentityAudit.Graph_V10.ps1 -RefreshMemberships -OpenDashboard
 ```
 
 Tune path depth and high-value target matching:
 
 ```powershell
-.\IdentityAudit.Graph_V9.ps1 `
+.\IdentityAudit.Graph_V10.ps1 `
   -MaxPathDepth 8 `
   -HighValueGroupPattern "(?i)(admin|privileged|break.?glass|global administrator|application administrator|security administrator|tier.?0|domain)" `
   -OpenDashboard
@@ -97,7 +103,7 @@ Tune path depth and high-value target matching:
 ## App-only certificate run
 
 ```powershell
-.\IdentityAudit.Graph_V9.ps1 `
+.\IdentityAudit.Graph_V10.ps1 `
   -TenantId "<tenant-id>" `
   -ClientId "<app-id>" `
   -CertificateThumbprint "<thumbprint>" `
@@ -111,13 +117,13 @@ Tune path depth and high-value target matching:
 ## Useful filters
 
 ```powershell
-.\IdentityAudit.Graph_V9.ps1 -SecurityOnly
-.\IdentityAudit.Graph_V9.ps1 -Microsoft365Only
-.\IdentityAudit.Graph_V9.ps1 -MailEnabledSecurityOnly
-.\IdentityAudit.Graph_V9.ps1 -DistributionListOnly
-.\IdentityAudit.Graph_V9.ps1 -MinGroupMembersCount 50
-.\IdentityAudit.Graph_V9.ps1 -HighDensityPctThreshold 2.5
-.\IdentityAudit.Graph_V9.ps1 -GroupIdsFile .\GroupIds.txt
+.\IdentityAudit.Graph_V10.ps1 -SecurityOnly
+.\IdentityAudit.Graph_V10.ps1 -Microsoft365Only
+.\IdentityAudit.Graph_V10.ps1 -MailEnabledSecurityOnly
+.\IdentityAudit.Graph_V10.ps1 -DistributionListOnly
+.\IdentityAudit.Graph_V10.ps1 -MinGroupMembersCount 50
+.\IdentityAudit.Graph_V10.ps1 -HighDensityPctThreshold 2.5
+.\IdentityAudit.Graph_V10.ps1 -GroupIdsFile .\GroupIds.txt
 ```
 
 ## Standard outputs
