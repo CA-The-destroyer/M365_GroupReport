@@ -51,7 +51,24 @@ It provides a richer UI over the generated evidence:
 - Owner to group associations
 - Risk findings
 - Filtered browser-side CSV exports
-- First-pass graphical node explorer using `IdentityAudit-Nodes.csv` and `IdentityAudit-Edges.csv`
+- Enhanced graphical node explorer using `IdentityAudit-Nodes.csv` and `IdentityAudit-Edges.csv`
+
+### Enhanced graph explorer
+
+The React graph page now supports:
+
+- Node type filtering: all, group, user, service principal, device, directory object
+- Edge type filtering: all, `MemberOf`, `OwnsGroup`
+- Minimum risk filter
+- High-value group filter
+- Search by node label, UPN, group name, or object ID
+- Click a node to inspect details
+- Expand selected node neighbors
+- Find shortest directed path from the selected node to a high-risk/high-value group
+- Highlight path nodes and path edges
+- Re-layout the graph
+- Export visible graph nodes
+- Export visible graph edges
 
 ### Generate web data
 
