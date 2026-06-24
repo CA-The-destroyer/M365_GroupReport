@@ -1,59 +1,50 @@
 <#
-IdentityAudit.Graph_V7.ps1
-Runs V6, then adds BloodHound-like graph analytics from the generated CSV evidence.
+.SYNOPSIS
+Identity Audit Graph V7 compatibility entrypoint.
+
+.DESCRIPTION
+V7 now forwards to V8, which patches the graph analytics Sort-Object parser issue.
 #>
+
 [CmdletBinding()]
 param(
-  [string]${TenantId},[string]${ClientId},[string]${CertificateThumbprint},
-  [string]${OutputRoot}='.\IdentityAudit-Evidence',[string]${CacheRoot}='.\IdentityAudit-Cache',[int]${CacheMaxAgeHours}=168,
-  [string]${GroupIdsFile},[switch]${IncludeTransitiveMembership},[switch]${SecurityOnly},[switch]${MailEnabledSecurityOnly},[switch]${DistributionListOnly},[switch]${Microsoft365Only},[switch]${IsEmpty},
-  [int]${MinGroupMembersCount}=0,[decimal]${HighDensityPctThreshold}=5.0,[switch]${SkipOwners},[switch]${InstallModules},[switch]${OpenDashboard},
-  [switch]${UseCacheOnly},[switch]${RefreshAll},[switch]${RefreshUsers},[switch]${RefreshGroups},[switch]${RefreshMemberships},[switch]${RefreshOwners},
-  [int]${MaxPathDepth}=6,[string]${HighValueGroupPattern}='(?i)(admin|privileged|break.?glass|global administrator|role|security administrator|application administrator|owner)'
+    [string] ${TenantId},
+    [string] ${ClientId},
+    [string] ${CertificateThumbprint},
+    [string] ${OutputRoot} = ".\IdentityAudit-Evidence",
+    [string] ${CacheRoot} = ".\IdentityAudit-Cache",
+    [int] ${CacheMaxAgeHours} = 168,
+    [string] ${GroupIdsFile},
+    [switch] ${IncludeTransitiveMembership},
+    [switch] ${SecurityOnly},
+    [switch] ${MailEnabledSecurityOnly},
+    [switch] ${DistributionListOnly},
+    [switch] ${Microsoft365Only},
+    [switch] ${IsEmpty},
+    [int] ${MinGroupMembersCount} = 0,
+    [decimal] ${HighDensityPctThreshold} = 5.0,
+    [switch] ${SkipOwners},
+    [switch] ${InstallModules},
+    [switch] ${OpenDashboard},
+    [switch] ${UseCacheOnly},
+    [switch] ${RefreshAll},
+    [switch] ${RefreshUsers},
+    [switch] ${RefreshGroups},
+    [switch] ${RefreshMemberships},
+    [switch] ${RefreshOwners},
+    [int] ${MaxPathDepth} = 6,
+    [string] ${HighValueGroupPattern} = '(?i)(admin|privileged|break.?glass|global administrator|role|security administrator|application administrator|owner)'
 )
-$ErrorActionPreference='Stop'
-function Say([string]$m){Write-Host "[IdentityAudit][V7] $m" -ForegroundColor Cyan}
-function HtmlSafe($v){if($null -eq $v){return ''};[System.Net.WebUtility]::HtmlEncode([string]$v)}
-function CsvSafe($rows,[string]$path){$items=@($rows);if($items.Count -eq 0){New-Item -ItemType File -Path $path -Force|Out-Null}else{$items|Export-Csv $path -NoTypeInformation}}
-function TableHtml([string]$title,$rows,[string[]]$cols,[int]$max=50){$items=@($rows);$h="<section class='panel'><h2>$(HtmlSafe $title)</h2>";if($items.Count -eq 0){return $h+'<p class="muted">No records found.</p></section>'};$h+='<table><thead><tr>';foreach($c in $cols){$h+="<th>$(HtmlSafe $c)</th>"};$h+='</tr></thead><tbody>';foreach($r in @($items|Select-Object -First $max)){$h+='<tr>';foreach($c in $cols){$v='';if($r.PSObject.Properties.Name -contains $c){$v=$r.$c};$h+="<td>$(HtmlSafe $v)</td>"};$h+='</tr>'};$h+'</tbody></table></section>'}
-function AddNode($map,[string]$id,[string]$label,[string]$type,[string]$subtype=''){if([string]::IsNullOrWhiteSpace($id)){return};if(-not $map.ContainsKey($id)){$map[$id]=[pscustomobject]@{Id=$id;Label=$label;Type=$type;SubType=$subtype;RiskScore=0;RiskDrivers=''}}}
-function EdgeObj($source,$target,$etype,$slabel,$tlabel,$stype,$ttype){[pscustomobject]@{SourceId=$source;SourceLabel=$slabel;SourceType=$stype;TargetId=$target;TargetLabel=$tlabel;TargetType=$ttype;EdgeType=$etype}}
-function ShortestPath($adj,[string]$start,$targets,[int]$maxDepth){$q=New-Object System.Collections.Queue;$seen=@{};$q.Enqueue(@($start,@($start)));$seen[$start]=$true;while($q.Count -gt 0){$item=$q.Dequeue();$node=$item[0];$path=@($item[1]);if($targets.ContainsKey($node) -and $node -ne $start){return $path};if($path.Count -gt ($maxDepth+1)){continue};foreach($n in @($adj[$node])){if(-not $seen.ContainsKey($n)){$seen[$n]=$true;$np=@($path+$n);$q.Enqueue(@($n,$np))}}};return @()}
-function FindCycles($adj,[int]$maxDepth){$found=@{};$cycles=@();foreach($start in $adj.Keys){$stack=@(@($start,@($start)));while($stack.Count -gt 0){$cur=$stack[-1];if($stack.Count -eq 1){$stack=@()}else{$stack=$stack[0..($stack.Count-2)]};$node=$cur[0];$path=@($cur[1]);if($path.Count -gt ($maxDepth+1)){continue};foreach($n in @($adj[$node])){if($n -eq $start -and $path.Count -gt 1){$cy=@($path+$start);$key=(@($cy|Sort-Object)-join '|');if(-not $found.ContainsKey($key)){$found[$key]=$true;$cycles+=[pscustomobject]@{Cycle=($cy -join ' -> ');Length=($cy.Count-1)}}}elseif($path -notcontains $n){$stack+=,@($n,@($path+$n))}}}};$cycles}
 
-$root=$PSScriptRoot;if([string]::IsNullOrWhiteSpace($root)){$root=Split-Path -Parent $MyInvocation.MyCommand.Path}
-$v6=Join-Path $root 'IdentityAudit.Graph_V6.ps1';if(-not(Test-Path $v6)){throw "Missing V6 dependency: $v6"}
-$v6Params=@{};foreach($k in @('TenantId','ClientId','CertificateThumbprint','OutputRoot','CacheRoot','CacheMaxAgeHours','GroupIdsFile','IncludeTransitiveMembership','SecurityOnly','MailEnabledSecurityOnly','DistributionListOnly','Microsoft365Only','IsEmpty','MinGroupMembersCount','HighDensityPctThreshold','SkipOwners','InstallModules','UseCacheOnly','RefreshAll','RefreshUsers','RefreshGroups','RefreshMemberships','RefreshOwners')){if($PSBoundParameters.ContainsKey($k)){$v6Params[$k]=$PSBoundParameters[$k]}}
-Say 'Running V6 collection/report first'; & $v6 @v6Params
-$outDir=Get-ChildItem -Path $OutputRoot -Directory|Sort-Object LastWriteTime -Descending|Select-Object -First 1;if(-not $outDir){throw "No output directory found under $OutputRoot"}
-Say "Analyzing output folder $($outDir.FullName)"
-$users=Import-Csv (Join-Path $outDir.FullName 'IdentityAudit-Users.csv')
-$groups=Import-Csv (Join-Path $outDir.FullName 'IdentityAudit-Groups.csv')
-$members=Import-Csv (Join-Path $outDir.FullName 'IdentityAudit-GroupMembers.csv')
-$owners=@();$ownerFile=Join-Path $outDir.FullName 'IdentityAudit-GroupOwners.csv';if(Test-Path $ownerFile){$owners=Import-Csv $ownerFile}
-$nodes=@{};$edges=@();$groupById=@{};$userById=@{}
-foreach($u in @($users)){AddNode $nodes $u.Id ($(if($u.UserPrincipalName){$u.UserPrincipalName}else{$u.DisplayName})) 'User' $u.UserType;$userById[$u.Id]=$u}
-foreach($g in @($groups)){AddNode $nodes $g.GroupId $g.GroupName 'Group' $g.GroupCategory;$groupById[$g.GroupId]=$g}
-foreach($m in @($members)){AddNode $nodes $m.MemberId ($(if($m.MemberUPN){$m.MemberUPN}else{$m.MemberDisplayName})) $m.MemberType ''; $edges+=EdgeObj $m.MemberId $m.GroupId 'MemberOf' ($(if($m.MemberUPN){$m.MemberUPN}else{$m.MemberDisplayName})) $m.GroupName $m.MemberType 'Group'}
-foreach($o in @($owners)){AddNode $nodes $o.OwnerId ($(if($o.OwnerUPN){$o.OwnerUPN}else{$o.OwnerDisplayName})) $o.OwnerType ''; $edges+=EdgeObj $o.OwnerId $o.GroupId 'OwnsGroup' ($(if($o.OwnerUPN){$o.OwnerUPN}else{$o.OwnerDisplayName})) $o.GroupName $o.OwnerType 'Group'}
-$groupEdges=@($edges|Where-Object{$_.SourceType -eq 'Group' -and $_.EdgeType -eq 'MemberOf'})
-$adj=@{};foreach($e in $groupEdges){if(-not $adj.ContainsKey($e.SourceId)){$adj[$e.SourceId]=@()};$adj[$e.SourceId]+=$e.TargetId}
-$highTargets=@{};foreach($g in @($groups)){if($g.IsAssignableToRole -eq 'True' -or $g.GroupName -match $HighValueGroupPattern){$highTargets[$g.GroupId]=$true}}
-$paths=@();foreach($e in @($edges|Where-Object{$_.SourceType -in @('User','Group','ServicePrincipal')})){if($highTargets.ContainsKey($e.TargetId)){continue};$p=ShortestPath $adj $e.TargetId $highTargets $MaxPathDepth;if(@($p).Count -gt 0){$pathLabels=@();foreach($id in @($p)){if($groupById.ContainsKey($id)){$pathLabels+=$groupById[$id].GroupName}else{$pathLabels+=$id}};$paths+=[pscustomobject]@{StartId=$e.SourceId;StartLabel=$e.SourceLabel;StartType=$e.SourceType;EntryGroup=$e.TargetLabel;TargetGroup=$pathLabels[-1];HopCount=@($p).Count;Path=($e.SourceLabel+' -> '+($pathLabels -join ' -> '));Risk='High'}}}
-$cycles=FindCycles $adj $MaxPathDepth
-$nestedStats=@();foreach($g in @($groups)){$gid=$g.GroupId;$contains=@($groupEdges|Where-Object{$_.TargetId -eq $gid}).Count;$nestedInto=@($groupEdges|Where-Object{$_.SourceId -eq $gid}).Count;$nestedStats+=[pscustomobject]@{GroupId=$gid;GroupName=$g.GroupName;NestedGroupMemberCount=$contains;NestedIntoGroupCount=$nestedInto;MemberCount=[int]$g.MemberCount;DepartmentCount=[int]$g.DepartmentCount}}
-$riskRows=@();foreach($g in @($groups)){$score=0;$drivers=@();if($g.IsAssignableToRole -eq 'True'){$score+=50;$drivers+='Role-assignable'};if([int]$g.OwnerCount -eq 0){$score+=20;$drivers+='Ownerless'};if($g.IsHighDensityGroup -eq 'True'){$score+=20;$drivers+='High density'};if($g.IsCrossDepartmentGroup -eq 'True'){$score+=15;$drivers+='Cross-department'};if($g.IsDynamicGroup -eq 'True'){$score+=5;$drivers+='Dynamic'};if([int]$g.DepartmentCount -gt 5){$score+=10;$drivers+='Many departments'};if([int]$g.MemberCount -gt 500){$score+=10;$drivers+='Large membership'};$ns=@($nestedStats|Where-Object{$_.GroupId -eq $g.GroupId}|Select-Object -First 1);if($ns -and ($ns.NestedGroupMemberCount -gt 0 -or $ns.NestedIntoGroupCount -gt 0)){$score+=10;$drivers+='Nested group'};$pathCount=@($paths|Where-Object{$_.EntryGroup -eq $g.GroupName -or $_.TargetGroup -eq $g.GroupName}).Count;if($pathCount -gt 0){$score+=25;$drivers+='Privileged path'};$riskRows+=[pscustomobject]@{GroupId=$g.GroupId;GroupName=$g.GroupName;RiskScore=$score;RiskDrivers=($drivers -join '; ');MemberCount=$g.MemberCount;OwnerCount=$g.OwnerCount;DepartmentCount=$g.DepartmentCount;MembershipDensityPct=$g.MembershipDensityPct;UserCoveragePct=$g.UserCoveragePct;PrivilegedPathCount=$pathCount;IsAssignableToRole=$g.IsAssignableToRole;IsDynamicGroup=$g.IsDynamicGroup}}
-$riskRows=@($riskRows|Sort-Object RiskScore -Descending,GroupName)
-$nodesOut=@($nodes.Values);foreach($n in $nodesOut){if($n.Type -eq 'Group'){$r=@($riskRows|Where-Object{$_.GroupId -eq $n.Id}|Select-Object -First 1);if($r){$n.RiskScore=$r.RiskScore;$n.RiskDrivers=$r.RiskDrivers}}}
-CsvSafe $nodesOut (Join-Path $outDir.FullName 'IdentityAudit-Nodes.csv');CsvSafe $edges (Join-Path $outDir.FullName 'IdentityAudit-Edges.csv');CsvSafe $paths (Join-Path $outDir.FullName 'IdentityAudit-PrivilegedPaths.csv');CsvSafe $cycles (Join-Path $outDir.FullName 'IdentityAudit-CircularNesting.csv');CsvSafe $nestedStats (Join-Path $outDir.FullName 'IdentityAudit-NestingStats.csv');CsvSafe $riskRows (Join-Path $outDir.FullName 'IdentityAudit-RiskScores.csv')
-$graphJson=[pscustomobject]@{nodes=$nodesOut;edges=$edges;paths=$paths;cycles=$cycles;riskScores=$riskRows};$graphJson|ConvertTo-Json -Depth 6|Out-File (Join-Path $outDir.FullName 'IdentityAudit-Graph.json') -Encoding utf8
-$topRisk=@($riskRows|Select-Object -First 25);$topNested=@($nestedStats|Sort-Object NestedGroupMemberCount,NestedIntoGroupCount -Descending|Select-Object -First 25);$topPaths=@($paths|Select-Object -First 50)
-$css="<style>body{font-family:Segoe UI,Arial;margin:32px;background:#f5f7fb;color:#172033}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px}.card,.panel{background:#fff;border:1px solid #d9e0ec;border-radius:12px;padding:14px;margin:14px 0}.value{font-size:28px;font-weight:700}table{border-collapse:collapse;width:100%;font-size:13px}td,th{border-bottom:1px solid #edf1f7;padding:7px;text-align:left}.muted{color:#667}</style>"
-$html="<!doctype html><html><head><meta charset='utf-8'><title>Identity Graph Analysis</title>$css</head><body><h1>Identity Graph Analysis</h1><p class='muted'>BloodHound-like graph analysis from Entra group, member, and owner evidence.</p><div class='cards'><div class='card'>Nodes<div class='value'>$(@($nodesOut).Count)</div></div><div class='card'>Edges<div class='value'>$(@($edges).Count)</div></div><div class='card'>High-value targets<div class='value'>$($highTargets.Count)</div></div><div class='card'>Privileged paths<div class='value'>$(@($paths).Count)</div></div><div class='card'>Circular nesting<div class='value'>$(@($cycles).Count)</div></div><div class='card'>Nested group edges<div class='value'>$(@($groupEdges).Count)</div></div></div>"
-$html+=TableHtml 'Top risk-scored groups' $topRisk @('GroupName','RiskScore','RiskDrivers','MemberCount','OwnerCount','DepartmentCount','MembershipDensityPct','PrivilegedPathCount')
-$html+=TableHtml 'Privileged path candidates' $topPaths @('StartLabel','StartType','EntryGroup','TargetGroup','HopCount','Path','Risk')
-$html+=TableHtml 'Circular group nesting' $cycles @('Length','Cycle')
-$html+=TableHtml 'Nested group chokepoints' $topNested @('GroupName','NestedGroupMemberCount','NestedIntoGroupCount','MemberCount','DepartmentCount')
-$html+='<p class="muted">Path analysis is based on observed group membership edges and configured high-value group pattern. Treat findings as review candidates, not automatic violations.</p></body></html>'
-$dash=Join-Path $outDir.FullName 'IdentityAudit-GraphDashboard.html';$html|Out-File $dash -Encoding utf8
-Say "Graph outputs written to $($outDir.FullName)";Say "Graph dashboard: $dash";if($OpenDashboard){Invoke-Item $dash}
+${ScriptRootPath} = $PSScriptRoot
+if ([string]::IsNullOrWhiteSpace(${ScriptRootPath})) {
+    ${ScriptRootPath} = Split-Path -Parent $MyInvocation.MyCommand.Path
+}
+
+${TargetScriptPath} = Join-Path ${ScriptRootPath} "IdentityAudit.Graph_V8.ps1"
+if (-not (Test-Path -Path ${TargetScriptPath})) {
+    throw "V8 script not found: ${TargetScriptPath}"
+}
+
+Write-Host "[IdentityAudit] V7 forwards to IdentityAudit.Graph_V8.ps1" -ForegroundColor Yellow
+& ${TargetScriptPath} @PSBoundParameters
