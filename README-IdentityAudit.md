@@ -1,16 +1,18 @@
-# Identity Audit v2
+# Identity Audit v3
 
 This branch adds a Microsoft Graph-based identity audit script while leaving the original `M365GroupReport.ps1` unchanged.
 
 ## Versioned script name
 
-Use the versioned entrypoint:
+Use the current versioned entrypoint:
 
 ```powershell
-.\IdentityAudit.Graph_V2.ps1
+.\IdentityAudit.Graph_V3.ps1
 ```
 
-`IdentityAudit.Graph_V2.ps1` includes a Windows PowerShell compatibility shim for `ConvertFrom-Json -Depth` and then invokes the core implementation.
+`IdentityAudit.Graph_V3.ps1` is self-contained. It does not invoke the older `IdentityAudit.Graph.ps1` core script.
+
+`IdentityAudit.Graph_V2.ps1` remains as a compatibility launcher and forwards to V3.
 
 ## Purpose
 
@@ -47,13 +49,13 @@ Enabled user members in the group / all enabled users observed in the run * 100
 ## Interactive run
 
 ```powershell
-.\IdentityAudit.Graph_V2.ps1 -InstallModules -OpenDashboard
+.\IdentityAudit.Graph_V3.ps1 -InstallModules -OpenDashboard
 ```
 
 ## App-only certificate run
 
 ```powershell
-.\IdentityAudit.Graph_V2.ps1 `
+.\IdentityAudit.Graph_V3.ps1 `
   -TenantId "<tenant-id>" `
   -ClientId "<app-id>" `
   -CertificateThumbprint "<thumbprint>" `
@@ -64,13 +66,13 @@ Enabled user members in the group / all enabled users observed in the run * 100
 ## Useful filters
 
 ```powershell
-.\IdentityAudit.Graph_V2.ps1 -SecurityOnly
-.\IdentityAudit.Graph_V2.ps1 -Microsoft365Only
-.\IdentityAudit.Graph_V2.ps1 -MailEnabledSecurityOnly
-.\IdentityAudit.Graph_V2.ps1 -DistributionListOnly
-.\IdentityAudit.Graph_V2.ps1 -MinGroupMembersCount 50
-.\IdentityAudit.Graph_V2.ps1 -HighDensityPctThreshold 2.5
-.\IdentityAudit.Graph_V2.ps1 -GroupIdsFile .\GroupIds.txt
+.\IdentityAudit.Graph_V3.ps1 -SecurityOnly
+.\IdentityAudit.Graph_V3.ps1 -Microsoft365Only
+.\IdentityAudit.Graph_V3.ps1 -MailEnabledSecurityOnly
+.\IdentityAudit.Graph_V3.ps1 -DistributionListOnly
+.\IdentityAudit.Graph_V3.ps1 -MinGroupMembersCount 50
+.\IdentityAudit.Graph_V3.ps1 -HighDensityPctThreshold 2.5
+.\IdentityAudit.Graph_V3.ps1 -GroupIdsFile .\GroupIds.txt
 ```
 
 ## Dashboard sections
