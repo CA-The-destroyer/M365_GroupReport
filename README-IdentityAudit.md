@@ -1,4 +1,4 @@
-# Identity Audit v4
+# Identity Audit v5
 
 This branch adds a Microsoft Graph-based identity audit script while leaving the original `M365GroupReport.ps1` unchanged.
 
@@ -7,10 +7,13 @@ This branch adds a Microsoft Graph-based identity audit script while leaving the
 Use the current versioned entrypoint:
 
 ```powershell
-.\IdentityAudit.Graph_V4.ps1
+.\IdentityAudit.Graph_V5.ps1
 ```
 
-`IdentityAudit.Graph_V4.ps1` fixes a PowerShell URI interpolation issue in V3 where `$ep?` could be parsed incorrectly and produce `/groups/<id>/$select=...` instead of `/groups/<id>/members?$select=...`.
+`IdentityAudit.Graph_V5.ps1` includes:
+
+- The V4 Graph URI interpolation fix for `/members?$select=...` and `/transitiveMembers?$select=...`.
+- A dashboard alias-collision fix that avoids single-letter helper names like `H`, which can collide with the built-in PowerShell `h` / `Get-History` alias.
 
 ## Purpose
 
@@ -47,13 +50,13 @@ Enabled user members in the group / all enabled users observed in the run * 100
 ## Interactive run
 
 ```powershell
-.\IdentityAudit.Graph_V4.ps1 -InstallModules -OpenDashboard
+.\IdentityAudit.Graph_V5.ps1 -InstallModules -OpenDashboard
 ```
 
 ## App-only certificate run
 
 ```powershell
-.\IdentityAudit.Graph_V4.ps1 `
+.\IdentityAudit.Graph_V5.ps1 `
   -TenantId "<tenant-id>" `
   -ClientId "<app-id>" `
   -CertificateThumbprint "<thumbprint>" `
@@ -64,13 +67,13 @@ Enabled user members in the group / all enabled users observed in the run * 100
 ## Useful filters
 
 ```powershell
-.\IdentityAudit.Graph_V4.ps1 -SecurityOnly
-.\IdentityAudit.Graph_V4.ps1 -Microsoft365Only
-.\IdentityAudit.Graph_V4.ps1 -MailEnabledSecurityOnly
-.\IdentityAudit.Graph_V4.ps1 -DistributionListOnly
-.\IdentityAudit.Graph_V4.ps1 -MinGroupMembersCount 50
-.\IdentityAudit.Graph_V4.ps1 -HighDensityPctThreshold 2.5
-.\IdentityAudit.Graph_V4.ps1 -GroupIdsFile .\GroupIds.txt
+.\IdentityAudit.Graph_V5.ps1 -SecurityOnly
+.\IdentityAudit.Graph_V5.ps1 -Microsoft365Only
+.\IdentityAudit.Graph_V5.ps1 -MailEnabledSecurityOnly
+.\IdentityAudit.Graph_V5.ps1 -DistributionListOnly
+.\IdentityAudit.Graph_V5.ps1 -MinGroupMembersCount 50
+.\IdentityAudit.Graph_V5.ps1 -HighDensityPctThreshold 2.5
+.\IdentityAudit.Graph_V5.ps1 -GroupIdsFile .\GroupIds.txt
 ```
 
 ## Dashboard sections
