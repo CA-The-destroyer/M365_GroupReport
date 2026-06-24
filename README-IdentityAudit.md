@@ -34,6 +34,40 @@ V10 includes collection, caching, standard evidence output, standard dashboard o
 - Graph JSON for future interactive visualization
 - Separate graph dashboard
 
+## Detail dashboard
+
+Use the detail dashboard post-processor after a V10 run to create searchable group and user association views:
+
+```powershell
+.\IdentityAudit.DetailDashboard.ps1 -OpenDashboard
+```
+
+It reads the latest timestamped folder under `.\IdentityAudit-Evidence` and creates:
+
+- `IdentityAudit-GroupUserDetail.csv`
+- `IdentityAudit-UserGroupAssociations.csv`
+- `IdentityAudit-GroupMembershipSummary.csv`
+- `IdentityAudit-OwnerGroupAssociations.csv`
+- `IdentityAudit-DetailDashboard.html`
+
+The detail dashboard includes:
+
+- Group membership summaries
+- Group → users/members detail
+- User/member → group association detail
+- Owner → group association detail
+- Privileged path candidates
+- Circular group nesting
+- Nested group chokepoints
+
+To target a specific run folder:
+
+```powershell
+.\IdentityAudit.DetailDashboard.ps1 `
+  -OutputFolder ".\IdentityAudit-Evidence\<run-folder>" `
+  -OpenDashboard
+```
+
 ## Graph output files
 
 Each V10 run adds these files to the normal timestamped output folder:
