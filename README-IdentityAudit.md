@@ -34,6 +34,65 @@ V10 includes collection, caching, standard evidence output, standard dashboard o
 - Graph JSON for future interactive visualization
 - Separate graph dashboard
 
+## React web dashboard
+
+The React dashboard is under:
+
+```text
+web-dashboard
+```
+
+It provides a richer UI over the generated evidence:
+
+- Executive summary
+- Group drilldowns
+- Group to users/members
+- User/member to group associations
+- Owner to group associations
+- Risk findings
+- Filtered browser-side CSV exports
+- First-pass graphical node explorer using `IdentityAudit-Nodes.csv` and `IdentityAudit-Edges.csv`
+
+### Generate web data
+
+After running V10 and the detail dashboard post-processor, build normalized React data:
+
+```powershell
+.\IdentityAudit.DetailDashboard.ps1
+.\IdentityAudit.BuildWebData.ps1 -AlsoWriteToRunFolder
+```
+
+This writes:
+
+```text
+web-dashboard\public\data\IdentityAudit-AppData.json
+```
+
+It can also write a copy into the run folder when `-AlsoWriteToRunFolder` is used.
+
+### Run locally
+
+```powershell
+cd .\web-dashboard
+npm install
+npm run dev
+```
+
+Open the local URL shown by Vite.
+
+### Build static dashboard
+
+```powershell
+cd .\web-dashboard
+npm run build
+```
+
+The static output is created under:
+
+```text
+web-dashboard\dist
+```
+
 ## Detail dashboard
 
 Use the detail dashboard post-processor after a V10 run to create searchable group and user association views:
@@ -53,9 +112,9 @@ It reads the latest timestamped folder under `.\IdentityAudit-Evidence` and crea
 The detail dashboard includes:
 
 - Group membership summaries
-- Group → users/members detail
-- User/member → group association detail
-- Owner → group association detail
+- Group to users/members detail
+- User/member to group association detail
+- Owner to group association detail
 - Privileged path candidates
 - Circular group nesting
 - Nested group chokepoints
