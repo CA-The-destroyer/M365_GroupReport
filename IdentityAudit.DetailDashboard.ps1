@@ -3,13 +3,7 @@
 Builds a searchable detail dashboard from IdentityAudit.Graph_V10 output.
 
 .DESCRIPTION
-Reads the latest IdentityAudit-Evidence run folder, or a specified OutputFolder, and creates:
-- IdentityAudit-GroupUserDetail.csv
-- IdentityAudit-UserGroupAssociations.csv
-- IdentityAudit-GroupMembershipSummary.csv
-- IdentityAudit-OwnerGroupAssociations.csv
-- IdentityAudit-DetailDashboard.html
-
+Reads the latest IdentityAudit-Evidence run folder, or a specified OutputFolder, and creates searchable group and user association detail.
 This script does not connect to Microsoft Graph. It post-processes existing CSV evidence.
 #>
 
@@ -24,18 +18,20 @@ param(
 $ErrorActionPreference = 'Stop'
 
 function Write-Stage([string] ${Message}) { Write-Host "[IdentityAudit][Detail] ${Message}" -ForegroundColor Cyan }
-function HtmlSafe($Value) { if ($null -eq ${Value}) { return '' }; return [System.Net.WebUtility]::HtmlEncode([string] ${Value}) }
 function Test-Value($Value) { return -not [string]::IsNullOrWhiteSpace([string] ${Value}) }
+function HtmlSafe($Value) { if ($null -eq ${Value}) { return '' }; return [System.Net.WebUtility]::HtmlEncode([string] ${Value}) }
 function Import-CsvSafe([string] ${Path}) { if (-not (Test-Path ${Path})) { return @() }; return @(Import-Csv ${Path} | Where-Object { $null -ne $_ }) }
 function Export-CsvSafe($Rows, [string] ${Path}) { ${items} = @(${Rows} | Where-Object { $null -ne $_ }); if (${items}.Count -eq 0) { New-Item -ItemType File -Path ${Path} -Force | Out-Null } else { ${items} | Export-Csv ${Path} -NoTypeInformation } }
 function Set-MapValue($Map, $Key, $Value) { if (Test-Value ${Key}) { ${Map}[[string] ${Key}] = ${Value} } }
 function Get-MapValue($Map, $Key) { if (-not (Test-Value ${Key})) { return $null }; if (${Map}.ContainsKey([string] ${Key})) { return ${Map}[[string] ${Key}] }; return $null }
 function Join-Unique($Values) { return (@(${Values} | Where-Object { Test-Value $_ } | Select-Object -Unique) -join '; ') }
+function To-Int($Value) { try { return [int]${Value} } catch { return 0 } }
+
 function New-SearchableTable([string] ${Title}, [string] ${Description}, $Rows, [string[]] ${Columns}, [string] ${TableId}) {
     ${items} = @(${Rows} | Where-Object { $null -ne $_ })
     ${html} = "<section class='panel'><div class='section-head'><div><h2>$(HtmlSafe ${Title})</h2><p class='muted'>$(HtmlSafe ${Description})</p></div><div class='count'>$(${items}.Count) rows</div></div>"
     if (${items}.Count -eq 0) { return ${html} + '<p class="muted">No records found.</p></section>' }
-    ${html} += "<input class='search' placeholder='Search this table...' onkeyup=`"filterTable(this, '${TableId}')`" />"
+    ${html} += "<input class='search' placeholder='Search this table...' onkeyup='filterTable(this, `"${TableId}`")' />"
     ${html} += "<div class='table-wrap'><table id='${TableId}'><thead><tr>"
     foreach (${column} in ${Columns}) { ${html} += "<th>$(HtmlSafe ${column})</th>" }
     ${html} += '</tr></thead><tbody>'
@@ -57,7 +53,6 @@ if (-not (Test-Value ${OutputFolder})) {
     if (-not ${latest}) { throw "No run folders found under ${OutputRoot}" }
     ${OutputFolder} = ${latest}.FullName
 }
-
 if (-not (Test-Path ${OutputFolder})) { throw "Output folder not found: ${OutputFolder}" }
 Write-Stage "Reading output folder: ${OutputFolder}"
 
@@ -111,6 +106,7 @@ foreach (${ownerGroup} in @(${owners} | Where-Object { Test-Value $_.OwnerId } |
 ${userGroupAssociations} = @()
 foreach (${memberGroup} in @(${members} | Where-Object { Test-Value $_.MemberId } | Group-Object MemberId)) {
     ${rows} = @(${memberGroup}.Group)
+    if (${rows}.Count -eq 0) { continue }
     ${sample} = ${rows}[0]
     ${ownedGroups} = @(Get-MapValue ${ownedByPrincipal} ${memberGroup}.Name)
     ${riskRows} = @()
@@ -118,6 +114,8 @@ foreach (${memberGroup} in @(${members} | Where-Object { Test-Value $_.MemberId 
         ${r} = Get-MapValue ${riskMap} ${row}.GroupId
         if (${r}) { ${riskRows} += ${r} }
     }
+    ${highestRisk} = 0
+    if (@(${riskRows}).Count -gt 0) { ${highestRisk} = (@(${riskRows} | Sort-Object { To-Int $_.RiskScore } -Descending | Select-Object -First 1).RiskScore) }
     ${userGroupAssociations} += [pscustomobject]@{
         MemberDisplayName = ${sample}.MemberDisplayName
         MemberUPN = ${sample}.MemberUPN
@@ -131,8 +129,8 @@ foreach (${memberGroup} in @(${members} | Where-Object { Test-Value $_.MemberId 
         SecurityGroups = Join-Unique (@(${rows} | Where-Object { $_.GroupCategory -eq 'Security' }) | ForEach-Object { $_.GroupName })
         M365Groups = Join-Unique (@(${rows} | Where-Object { $_.GroupCategory -eq 'Microsoft365' }) | ForEach-Object { $_.GroupName })
         RoleAssignableGroupCount = @(${rows} | Where-Object { $_.GroupIsAssignableToRole -eq 'True' -or $_.GroupIsAssignableToRole -eq $true }).Count
-        HighRiskGroupCount = @(${riskRows} | Where-Object { [int]($_.RiskScore) -ge ${HighRiskScoreThreshold} }).Count
-        HighestRiskScore = $(if (@(${riskRows}).Count -gt 0) { (@(${riskRows} | Sort-Object {[int]$_.RiskScore} -Descending | Select-Object -First 1).RiskScore) } else { 0 })
+        HighRiskGroupCount = @(${riskRows} | Where-Object { (To-Int $_.RiskScore) -ge ${HighRiskScoreThreshold} }).Count
+        HighestRiskScore = ${highestRisk}
         OwnedGroupCount = @(${ownedGroups}).Count
         OwnedGroups = Join-Unique (@(${ownedGroups}) | ForEach-Object { $_.GroupName })
         MemberId = ${memberGroup}.Name
@@ -144,6 +142,7 @@ Write-Stage 'Building group membership summaries'
 ${groupMembershipSummary} = @()
 foreach (${grouped} in @(${members} | Where-Object { Test-Value $_.GroupId } | Group-Object GroupId)) {
     ${rows} = @(${grouped}.Group)
+    if (${rows}.Count -eq 0) { continue }
     ${sample} = ${rows}[0]
     ${group} = Get-MapValue ${groupMap} ${grouped}.Name
     ${risk} = Get-MapValue ${riskMap} ${grouped}.Name
@@ -165,12 +164,13 @@ foreach (${grouped} in @(${members} | Where-Object { Test-Value $_.GroupId } | G
         GroupId = ${grouped}.Name
     }
 }
-${groupMembershipSummary} = @(${groupMembershipSummary} | Sort-Object @{Expression='RiskScore';Descending=$true}, @{Expression='MemberRows';Descending=$true}, GroupName)
+${groupMembershipSummary} = @(${groupMembershipSummary} | Sort-Object @{Expression={ To-Int $_.RiskScore };Descending=$true}, @{Expression='MemberRows';Descending=$true}, GroupName)
 
 Write-Stage 'Building owner association rows'
 ${ownerAssociations} = @()
 foreach (${ownerGroup} in @(${owners} | Where-Object { Test-Value $_.OwnerId } | Group-Object OwnerId)) {
     ${rows} = @(${ownerGroup}.Group)
+    if (${rows}.Count -eq 0) { continue }
     ${sample} = ${rows}[0]
     ${ownerAssociations} += [pscustomobject]@{
         OwnerDisplayName = ${sample}.OwnerDisplayName
@@ -195,31 +195,40 @@ body{font-family:Segoe UI,Arial;margin:32px;background:#f5f7fb;color:#172033}.ca
 </style>
 <script>
 function filterTable(input, tableId){
-  const q=(input.value||'').toLowerCase();
-  const table=document.getElementById(tableId);
-  if(!table) return;
-  const rows=table.querySelectorAll('tbody tr');
-  rows.forEach(r=>{r.style.display=r.innerText.toLowerCase().includes(q)?'':'none';});
+  var q=(input.value||'').toLowerCase();
+  var table=document.getElementById(tableId);
+  if(!table){return;}
+  var rows=table.querySelectorAll('tbody tr');
+  rows.forEach(function(row){ row.style.display=row.innerText.toLowerCase().indexOf(q)>=0 ? '' : 'none'; });
 }
 </script>
 '@
 
+${navHtml} = @'
+<nav>
+<a href="#groupSummary">Group summaries</a>
+<a href="#groupUsers">Group to users</a>
+<a href="#userGroups">User to groups</a>
+<a href="#owners">Owners</a>
+<a href="#graphFindings">Graph findings</a>
+</nav>
+'@
+
+${dashboardPath} = Join-Path ${OutputFolder} 'IdentityAudit-DetailDashboard.html'
+${uniqueUsers} = @(${groupUserDetail} | Where-Object { $_.MemberType -eq 'User' } | Select-Object -ExpandProperty MemberId -Unique).Count
 ${html} = "<!doctype html><html><head><meta charset='utf-8'><title>Identity Detail Dashboard</title>${css}</head><body>"
 ${html} += '<h1>Identity Detail Dashboard</h1>'
 ${html} += "<p class='muted'>Searchable group membership and user group-association detail from $(HtmlSafe ${OutputFolder}).</p>"
-${html} += '<nav><a href="#groupSummary">Group summaries</a><a href="#groupUsers">Group → users</a><a href="#userGroups">User → groups</a><a href="#owners">Owners</a><a href="#graphFindings">Graph findings</a></nav>'
-${uniqueUsers} = @(${groupUserDetail} | Where-Object { $_.MemberType -eq 'User' } | Select-Object -ExpandProperty MemberId -Unique).Count
+${html} += ${navHtml}
 ${html} += "<div class='cards'><div class='card'>Groups with members<div class='value'>$(@(${groupMembershipSummary}).Count)</div></div><div class='card'>Membership rows<div class='value'>$(@(${groupUserDetail}).Count)</div></div><div class='card'>Unique user members<div class='value'>${uniqueUsers}</div></div><div class='card'>User association rows<div class='value'>$(@(${userGroupAssociations}).Count)</div></div><div class='card'>Owner rows<div class='value'>$(@(${ownerAssociations}).Count)</div></div><div class='card'>Privileged paths<div class='value'>$(@(${paths}).Count)</div></div></div>"
-${html} += '<a id="groupSummary"></a>' + (New-SearchableTable 'Group membership summaries' 'One row per group, with member-type counts, owners, risk score, and departments.' ${groupMembershipSummary} @('GroupName','GroupCategory','RiskScore','RiskDrivers','MemberRows','UserMembers','GroupMembers','ServicePrincipalMembers','DeviceMembers','Departments','Owners','IsAssignableToRole','IsDynamicGroup') 'tblGroupSummary')
-${html} += '<a id="groupUsers"></a>' + (New-SearchableTable 'Group → users and members' 'Every membership row. Search by group, user, UPN, department, owner, member type, or risk driver.' ${groupUserDetail} @('GroupName','GroupCategory','RiskScore','RiskDrivers','Owners','MemberDisplayName','MemberUPN','MemberType','MemberDepartment','MemberJobTitle','MemberCompanyName','MemberAccountEnabled','MembershipMode','IsAssignableToRole','IsDynamicGroup') 'tblGroupUsers')
-${html} += '<a id="userGroups"></a>' + (New-SearchableTable 'User/member → group associations' 'One row per member, showing all group associations and owned groups.' ${userGroupAssociations} @('MemberDisplayName','MemberUPN','MemberType','MemberDepartment','MemberJobTitle','MemberCompanyName','MemberAccountEnabled','GroupCount','HighestRiskScore','HighRiskGroupCount','RoleAssignableGroupCount','OwnedGroupCount','Groups','OwnedGroups') 'tblUserGroups')
-${html} += '<a id="owners"></a>' + (New-SearchableTable 'Owner → group associations' 'One row per owner, showing all groups owned by that principal.' ${ownerAssociations} @('OwnerDisplayName','OwnerUPN','OwnerType','OwnedGroupCount','OwnedGroups') 'tblOwners')
+${html} += '<a id="groupSummary"></a>' + (New-SearchableTable 'Group membership summaries' 'One row per group, with member-type counts, owners, departments, and risk score.' ${groupMembershipSummary} @('GroupName','GroupCategory','RiskScore','RiskDrivers','MemberRows','UserMembers','GroupMembers','ServicePrincipalMembers','DeviceMembers','Departments','Owners','IsAssignableToRole','IsDynamicGroup') 'tblGroupSummary')
+${html} += '<a id="groupUsers"></a>' + (New-SearchableTable 'Group to users and members' 'Every membership row. Search by group, user, UPN, department, owner, member type, or risk driver.' ${groupUserDetail} @('GroupName','GroupCategory','RiskScore','RiskDrivers','Owners','MemberDisplayName','MemberUPN','MemberType','MemberDepartment','MemberJobTitle','MemberCompanyName','MemberAccountEnabled','MembershipMode','IsAssignableToRole','IsDynamicGroup') 'tblGroupUsers')
+${html} += '<a id="userGroups"></a>' + (New-SearchableTable 'User/member to group associations' 'One row per member, showing all group associations and owned groups.' ${userGroupAssociations} @('MemberDisplayName','MemberUPN','MemberType','MemberDepartment','MemberJobTitle','MemberCompanyName','MemberAccountEnabled','GroupCount','HighestRiskScore','HighRiskGroupCount','RoleAssignableGroupCount','OwnedGroupCount','Groups','OwnedGroups') 'tblUserGroups')
+${html} += '<a id="owners"></a>' + (New-SearchableTable 'Owner to group associations' 'One row per owner, showing all groups they own.' ${ownerAssociations} @('OwnerDisplayName','OwnerUPN','OwnerType','OwnedGroupCount','OwnedGroups') 'tblOwners')
 ${html} += '<a id="graphFindings"></a>' + (New-SearchableTable 'Privileged path candidates' 'Path candidates from the graph analysis layer.' ${paths} @('StartLabel','StartType','EntryGroup','TargetGroup','HopCount','Path','Risk') 'tblPaths')
 ${html} += (New-SearchableTable 'Circular group nesting' 'Detected group nesting cycles.' ${cycles} @('Length','Cycle') 'tblCycles')
 ${html} += (New-SearchableTable 'Nested group chokepoints' 'Groups with nested group edges.' ${nestingStats} @('GroupName','NestedGroupMemberCount','NestedIntoGroupCount','MemberCount','DepartmentCount') 'tblNesting')
 ${html} += "<p class='muted small'>Generated $(Get-Date). Full detail CSVs are saved in the same output folder.</p></body></html>"
-
-${dashboardPath} = Join-Path ${OutputFolder} 'IdentityAudit-DetailDashboard.html'
 ${html} | Out-File ${dashboardPath} -Encoding utf8 -Force
 Write-Stage "Detail dashboard written: ${dashboardPath}"
 
