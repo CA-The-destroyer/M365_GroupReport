@@ -65,17 +65,46 @@ function Get-AuditValue {
 
     if ($null -eq ${Object}) { return $null }
 
+    if (${Object} -is [System.Collections.IDictionary]) {
+        if (${Object}.Contains(${Name})) { return ${Object}[${Name}] }
+        if (${Object}.ContainsKey(${Name})) { return ${Object}[${Name}] }
+    }
+
     if (${Object}.PSObject.Properties.Name -contains ${Name}) {
         return ${Object}.PSObject.Properties[${Name}].Value
     }
 
     if (${Object}.PSObject.Properties.Name -contains "AdditionalProperties") {
-        if (${Object}.AdditionalProperties -and ${Object}.AdditionalProperties.ContainsKey(${Name})) {
-            return ${Object}.AdditionalProperties[${Name}]
+        ${AdditionalProperties} = ${Object}.AdditionalProperties
+        if (${AdditionalProperties} -is [System.Collections.IDictionary]) {
+            if (${AdditionalProperties}.Contains(${Name})) { return ${AdditionalProperties}[${Name}] }
+            if (${AdditionalProperties}.ContainsKey(${Name})) { return ${AdditionalProperties}[${Name}] }
         }
     }
 
     return $null
+}
+
+function Invoke-GraphPagedGet {
+    param([Parameter(Mandatory)] [string] ${Uri})
+
+    ${Rows} = New-Object System.Collections.Generic.List[object]
+    ${NextUri} = ${Uri}
+
+    while (-not [string]::IsNullOrWhiteSpace([string] ${NextUri})) {
+        ${Response} = Invoke-MgGraphRequest -Method GET -Uri ${NextUri}
+        ${Values} = Get-AuditValue -Object ${Response} -Name "value"
+
+        if ($null -ne ${Values}) {
+            foreach (${Item} in @(${Values})) {
+                ${Rows}.Add(${Item})
+            }
+        }
+
+        ${NextUri} = Get-AuditValue -Object ${Response} -Name "@odata.nextLink"
+    }
+
+    return ${Rows}.ToArray()
 }
 
 function Get-DirectoryObjectType {
@@ -109,15 +138,15 @@ function Get-DirectoryObjectDisplayName {
 function Get-GroupCategory {
     param([Parameter(Mandatory)] ${Group})
 
-    ${GroupTypes} = Get-AuditValue -Object ${Group} -Name "GroupTypes"
-    if ($null -eq ${GroupTypes}) { ${GroupTypes} = Get-AuditValue -Object ${Group} -Name "groupTypes" }
+    ${GroupTypes} = Get-AuditValue -Object ${Group} -Name "groupTypes"
+    if ($null -eq ${GroupTypes}) { ${GroupTypes} = Get-AuditValue -Object ${Group} -Name "GroupTypes" }
     ${GroupTypesText} = if (${GroupTypes}) { @(${GroupTypes}) -join ";" } else { "" }
 
-    ${SecurityEnabled} = Get-AuditValue -Object ${Group} -Name "SecurityEnabled"
-    if ($null -eq ${SecurityEnabled}) { ${SecurityEnabled} = Get-AuditValue -Object ${Group} -Name "securityEnabled" }
+    ${SecurityEnabled} = Get-AuditValue -Object ${Group} -Name "securityEnabled"
+    if ($null -eq ${SecurityEnabled}) { ${SecurityEnabled} = Get-AuditValue -Object ${Group} -Name "SecurityEnabled" }
 
-    ${MailEnabled} = Get-AuditValue -Object ${Group} -Name "MailEnabled"
-    if ($null -eq ${MailEnabled}) { ${MailEnabled} = Get-AuditValue -Object ${Group} -Name "mailEnabled" }
+    ${MailEnabled} = Get-AuditValue -Object ${Group} -Name "mailEnabled"
+    if ($null -eq ${MailEnabled}) { ${MailEnabled} = Get-AuditValue -Object ${Group} -Name "MailEnabled" }
 
     if (${GroupTypesText} -match "Unified") { return "Microsoft365" }
     if (${SecurityEnabled} -eq $true -and ${MailEnabled} -eq $true) { return "MailEnabledSecurity" }
@@ -226,8 +255,6 @@ function Write-IdentityAuditManifest {
 
 Write-Stage "Preparing modules"
 Ensure-Module -Name Microsoft.Graph.Authentication
-Ensure-Module -Name Microsoft.Graph.Users
-Ensure-Module -Name Microsoft.Graph.Groups
 
 ${RunId} = Get-Date -Format "yyyyMMdd-HHmmss"
 ${OutputDir} = Join-Path ${OutputRoot} ${RunId}
@@ -261,13 +288,26 @@ try {
     }
 
     Write-Stage "Collecting users"
-    ${UserProperties} = @(
-        "id", "displayName", "userPrincipalName", "mail", "department", "jobTitle",
-        "companyName", "accountEnabled", "userType", "employeeId", "createdDateTime"
-    )
+    ${UsersUri} = '/v1.0/users?$select=id,displayName,userPrincipalName,mail,department,jobTitle,companyName,accountEnabled,userType,employeeId,createdDateTime'
+    ${RawUsers} = @(Invoke-GraphPagedGet -Uri ${UsersUri})
 
-    ${Users} = @(Get-MgUser -All -Property ${UserProperties} |
-        Select-Object Id, DisplayName, UserPrincipalName, Mail, Department, JobTitle, CompanyName, AccountEnabled, UserType, EmployeeId, CreatedDateTime)
+    ${Users} = @(
+        foreach (${User} in ${RawUsers}) {
+            [pscustomobject]@{
+                Id                = Get-AuditValue -Object ${User} -Name "id"
+                DisplayName       = Get-AuditValue -Object ${User} -Name "displayName"
+                UserPrincipalName = Get-AuditValue -Object ${User} -Name "userPrincipalName"
+                Mail              = Get-AuditValue -Object ${User} -Name "mail"
+                Department        = Get-AuditValue -Object ${User} -Name "department"
+                JobTitle          = Get-AuditValue -Object ${User} -Name "jobTitle"
+                CompanyName       = Get-AuditValue -Object ${User} -Name "companyName"
+                AccountEnabled    = Get-AuditValue -Object ${User} -Name "accountEnabled"
+                UserType          = Get-AuditValue -Object ${User} -Name "userType"
+                EmployeeId        = Get-AuditValue -Object ${User} -Name "employeeId"
+                CreatedDateTime   = Get-AuditValue -Object ${User} -Name "createdDateTime"
+            }
+        }
+    )
 
     ${UsersById} = @{}
     foreach (${User} in ${Users}) {
@@ -281,25 +321,19 @@ try {
     ${NoDepartmentUserCount} = @(${Users} | Where-Object { [string]::IsNullOrWhiteSpace([string] ${_}.Department) }).Count
 
     Write-Stage "Collecting groups"
-    ${GroupProperties} = @(
-        "id", "displayName", "description", "mail", "mailEnabled", "securityEnabled", "groupTypes",
-        "membershipRule", "membershipRuleProcessingState", "isAssignableToRole", "createdDateTime", "visibility"
-    )
+    ${GroupsUri} = '/v1.0/groups?$select=id,displayName,description,mail,mailEnabled,securityEnabled,groupTypes,membershipRule,membershipRuleProcessingState,isAssignableToRole,createdDateTime,visibility'
 
     if (-not [string]::IsNullOrWhiteSpace(${GroupIdsFile})) {
-        if (-not (Test-Path -Path ${GroupIdsFile})) {
-            throw "GroupIdsFile not found: ${GroupIdsFile}"
-        }
-
+        if (-not (Test-Path -Path ${GroupIdsFile})) { throw "GroupIdsFile not found: ${GroupIdsFile}" }
         ${GroupIds} = @(Get-Content -Path ${GroupIdsFile} | Where-Object { -not [string]::IsNullOrWhiteSpace([string] ${_}) })
         ${Groups} = @(
             foreach (${GroupId} in ${GroupIds}) {
-                Get-MgGroup -GroupId ${GroupId}.Trim() -Property ${GroupProperties}
+                Invoke-MgGraphRequest -Method GET -Uri "/v1.0/groups/$(${GroupId}.Trim())?`$select=id,displayName,description,mail,mailEnabled,securityEnabled,groupTypes,membershipRule,membershipRuleProcessingState,isAssignableToRole,createdDateTime,visibility"
             }
         )
     }
     else {
-        ${Groups} = @(Get-MgGroup -All -Property ${GroupProperties})
+        ${Groups} = @(Invoke-GraphPagedGet -Uri ${GroupsUri})
     }
 
     ${FilteredGroups} = @(
@@ -321,26 +355,38 @@ try {
 
     foreach (${Group} in ${FilteredGroups}) {
         ${GroupCount}++
+        ${GroupId} = Get-AuditValue -Object ${Group} -Name "id"
+        ${GroupName} = Get-AuditValue -Object ${Group} -Name "displayName"
+        ${GroupMail} = Get-AuditValue -Object ${Group} -Name "mail"
+        ${SecurityEnabled} = Get-AuditValue -Object ${Group} -Name "securityEnabled"
+        ${MailEnabled} = Get-AuditValue -Object ${Group} -Name "mailEnabled"
+        ${GroupTypes} = Get-AuditValue -Object ${Group} -Name "groupTypes"
+        ${GroupTypesText} = if (${GroupTypes}) { @(${GroupTypes}) -join ";" } else { "" }
+        ${GroupIsAssignableToRole} = Get-AuditValue -Object ${Group} -Name "isAssignableToRole"
+        ${GroupMembershipRule} = Get-AuditValue -Object ${Group} -Name "membershipRule"
+        ${MembershipRuleState} = Get-AuditValue -Object ${Group} -Name "membershipRuleProcessingState"
         ${Category} = Get-GroupCategory -Group ${Group}
         ${PercentComplete} = (${GroupCount} / [math]::Max(1, @(${FilteredGroups}).Count)) * 100
-        Write-Progress -Activity "Collecting group membership" -Status ${Group}.DisplayName -PercentComplete ${PercentComplete}
+        Write-Progress -Activity "Collecting group membership" -Status ${GroupName} -PercentComplete ${PercentComplete}
 
         if (${IncludeTransitiveMembership}.IsPresent) {
-            ${Members} = @(Get-MgGroupTransitiveMember -GroupId ${Group}.Id -All -ErrorAction Stop)
+            ${MembersUri} = "/v1.0/groups/${GroupId}/transitiveMembers?`$select=id,displayName,userPrincipalName,mail"
         }
         else {
-            ${Members} = @(Get-MgGroupMember -GroupId ${Group}.Id -All -ErrorAction Stop)
+            ${MembersUri} = "/v1.0/groups/${GroupId}/members?`$select=id,displayName,userPrincipalName,mail"
         }
+
+        ${Members} = @(Invoke-GraphPagedGet -Uri ${MembersUri})
 
         if (-not ${SkipOwners}.IsPresent) {
             try {
-                ${Owners} = @(Get-MgGroupOwner -GroupId ${Group}.Id -All -ErrorAction Stop)
+                ${Owners} = @(Invoke-GraphPagedGet -Uri "/v1.0/groups/${GroupId}/owners?`$select=id,displayName,userPrincipalName,mail")
             }
             catch {
                 ${Owners} = @()
                 ${OwnerRows}.Add([pscustomobject]@{
-                    GroupId          = ${Group}.Id
-                    GroupName        = ${Group}.DisplayName
+                    GroupId          = ${GroupId}
+                    GroupName        = ${GroupName}
                     GroupCategory    = ${Category}
                     OwnerId          = ""
                     OwnerDisplayName = "ERROR: $($_.Exception.Message)"
@@ -351,10 +397,10 @@ try {
 
             foreach (${Owner} in ${Owners}) {
                 ${OwnerRows}.Add([pscustomobject]@{
-                    GroupId          = ${Group}.Id
-                    GroupName        = ${Group}.DisplayName
+                    GroupId          = ${GroupId}
+                    GroupName        = ${GroupName}
                     GroupCategory    = ${Category}
-                    OwnerId          = ${Owner}.Id
+                    OwnerId          = Get-AuditValue -Object ${Owner} -Name "id"
                     OwnerDisplayName = Get-DirectoryObjectDisplayName -Object ${Owner}
                     OwnerUPN         = Get-AuditValue -Object ${Owner} -Name "userPrincipalName"
                     OwnerType        = Get-DirectoryObjectType -Object ${Owner}
@@ -363,6 +409,7 @@ try {
         }
 
         foreach (${Member} in ${Members}) {
+            ${MemberId} = Get-AuditValue -Object ${Member} -Name "id"
             ${ObjectType} = Get-DirectoryObjectType -Object ${Member}
             ${MemberDisplayName} = Get-DirectoryObjectDisplayName -Object ${Member}
             ${MemberMail} = Get-AuditValue -Object ${Member} -Name "mail"
@@ -374,32 +421,31 @@ try {
             ${UserType} = ""
             ${EmployeeId} = ""
 
-            if (${ObjectType} -eq "User" -and ${UsersById}.ContainsKey(${Member}.Id)) {
-                ${UserProfile} = ${UsersById}[${Member}.Id]
+            if (${ObjectType} -eq "User" -and ${UsersById}.ContainsKey(${MemberId})) {
+                ${UserProfile} = ${UsersById}[${MemberId}]
                 ${Department} = ${UserProfile}.Department
                 ${JobTitle} = ${UserProfile}.JobTitle
                 ${CompanyName} = ${UserProfile}.CompanyName
                 ${AccountEnabled} = ${UserProfile}.AccountEnabled
                 ${UserType} = ${UserProfile}.UserType
                 ${EmployeeId} = ${UserProfile}.EmployeeId
-
                 if ([string]::IsNullOrWhiteSpace([string] ${MemberUPN})) { ${MemberUPN} = ${UserProfile}.UserPrincipalName }
                 if ([string]::IsNullOrWhiteSpace([string] ${MemberMail})) { ${MemberMail} = ${UserProfile}.Mail }
             }
 
             ${MemberRows}.Add([pscustomobject]@{
-                GroupId                 = ${Group}.Id
-                GroupName               = ${Group}.DisplayName
-                GroupMail               = ${Group}.Mail
+                GroupId                 = ${GroupId}
+                GroupName               = ${GroupName}
+                GroupMail               = ${GroupMail}
                 GroupCategory           = ${Category}
-                GroupSecurityEnabled    = ${Group}.SecurityEnabled
-                GroupMailEnabled        = ${Group}.MailEnabled
-                GroupTypes              = if (${Group}.GroupTypes) { ${Group}.GroupTypes -join ";" } else { "" }
-                GroupIsAssignableToRole = ${Group}.IsAssignableToRole
-                GroupMembershipRule     = ${Group}.MembershipRule
-                MembershipRuleState     = ${Group}.MembershipRuleProcessingState
+                GroupSecurityEnabled    = ${SecurityEnabled}
+                GroupMailEnabled        = ${MailEnabled}
+                GroupTypes              = ${GroupTypesText}
+                GroupIsAssignableToRole = ${GroupIsAssignableToRole}
+                GroupMembershipRule     = ${GroupMembershipRule}
+                MembershipRuleState     = ${MembershipRuleState}
                 MembershipMode          = ${MembershipMode}
-                MemberId                = ${Member}.Id
+                MemberId                = ${MemberId}
                 MemberDisplayName       = ${MemberDisplayName}
                 MemberUPN               = ${MemberUPN}
                 MemberMail              = ${MemberMail}
@@ -423,15 +469,25 @@ try {
     }
 
     foreach (${Group} in ${FilteredGroups}) {
+        ${GroupId} = Get-AuditValue -Object ${Group} -Name "id"
+        ${GroupName} = Get-AuditValue -Object ${Group} -Name "displayName"
+        ${GroupMail} = Get-AuditValue -Object ${Group} -Name "mail"
         ${Category} = Get-GroupCategory -Group ${Group}
-        ${RowsForGroup} = @(${MemberRows} | Where-Object { ${_}.GroupId -eq ${Group}.Id })
+        ${SecurityEnabled} = Get-AuditValue -Object ${Group} -Name "securityEnabled"
+        ${MailEnabled} = Get-AuditValue -Object ${Group} -Name "mailEnabled"
+        ${GroupTypes} = Get-AuditValue -Object ${Group} -Name "groupTypes"
+        ${GroupTypesText} = if (${GroupTypes}) { @(${GroupTypes}) -join ";" } else { "" }
+        ${MembershipRule} = Get-AuditValue -Object ${Group} -Name "membershipRule"
+        ${MembershipRuleState} = Get-AuditValue -Object ${Group} -Name "membershipRuleProcessingState"
+        ${IsAssignableToRole} = Get-AuditValue -Object ${Group} -Name "isAssignableToRole"
+        ${RowsForGroup} = @(${MemberRows} | Where-Object { ${_}.GroupId -eq ${GroupId} })
         ${MemberCount} = ${RowsForGroup}.Count
         ${UserMembers} = @(${RowsForGroup} | Where-Object { ${_}.MemberType -eq "User" })
         ${UniqueUserMembers} = @(${UserMembers} | Select-Object -ExpandProperty MemberId -Unique)
         ${ActiveUserMembers} = @(${UserMembers} | Where-Object { ${_}.MemberAccountEnabled -eq $true } | Select-Object -ExpandProperty MemberId -Unique)
         ${Departments} = @(${UserMembers} | Where-Object { -not [string]::IsNullOrWhiteSpace([string] ${_}.MemberDepartment) } | Select-Object -ExpandProperty MemberDepartment -Unique)
         ${BlankDepartmentCount} = @(${UserMembers} | Where-Object { [string]::IsNullOrWhiteSpace([string] ${_}.MemberDepartment) }).Count
-        ${OwnerCount} = if (${OwnerCountByGroupId}.ContainsKey(${Group}.Id)) { ${OwnerCountByGroupId}[${Group}.Id] } else { 0 }
+        ${OwnerCount} = if (${OwnerCountByGroupId}.ContainsKey(${GroupId})) { ${OwnerCountByGroupId}[${GroupId}] } else { 0 }
 
         ${DepartmentGroups} = @(${UserMembers} |
             Where-Object { -not [string]::IsNullOrWhiteSpace([string] ${_}.MemberDepartment) } |
@@ -457,17 +513,17 @@ try {
         if (${MinGroupMembersCount} -gt 0 -and ${MemberCount} -lt ${MinGroupMembersCount}) { continue }
 
         ${GroupRows}.Add([pscustomobject]@{
-            GroupId                     = ${Group}.Id
-            GroupName                   = ${Group}.DisplayName
-            GroupMail                   = ${Group}.Mail
+            GroupId                     = ${GroupId}
+            GroupName                   = ${GroupName}
+            GroupMail                   = ${GroupMail}
             GroupCategory               = ${Category}
-            SecurityEnabled             = ${Group}.SecurityEnabled
-            MailEnabled                 = ${Group}.MailEnabled
-            GroupTypes                  = if (${Group}.GroupTypes) { ${Group}.GroupTypes -join ";" } else { "" }
-            IsDynamicGroup              = -not [string]::IsNullOrWhiteSpace([string] ${Group}.MembershipRule)
-            MembershipRule              = ${Group}.MembershipRule
-            MembershipRuleState         = ${Group}.MembershipRuleProcessingState
-            IsAssignableToRole          = ${Group}.IsAssignableToRole
+            SecurityEnabled             = ${SecurityEnabled}
+            MailEnabled                 = ${MailEnabled}
+            GroupTypes                  = ${GroupTypesText}
+            IsDynamicGroup              = -not [string]::IsNullOrWhiteSpace([string] ${MembershipRule})
+            MembershipRule              = ${MembershipRule}
+            MembershipRuleState         = ${MembershipRuleState}
+            IsAssignableToRole          = ${IsAssignableToRole}
             OwnerCount                  = ${OwnerCount}
             MemberCount                 = ${MemberCount}
             UserMemberCount             = ${UniqueUserMemberCount}
@@ -481,8 +537,8 @@ try {
             UserCoveragePct             = ${UserCoveragePct}
             IsCrossDepartmentGroup      = (${DepartmentCountForGroup} -gt 1)
             IsHighDensityGroup          = (${DensityPct} -ge ${HighDensityPctThreshold})
-            CreatedDateTime             = ${Group}.CreatedDateTime
-            Visibility                  = ${Group}.Visibility
+            CreatedDateTime             = Get-AuditValue -Object ${Group} -Name "createdDateTime"
+            Visibility                  = Get-AuditValue -Object ${Group} -Name "visibility"
         })
     }
 
@@ -668,10 +724,5 @@ $(ConvertTo-IdentityAuditHtmlTable -Title "Dynamic groups" -Rows ${DynamicGroups
     }
 }
 finally {
-    try {
-        Disconnect-MgGraph | Out-Null
-    }
-    catch {
-        # Ignore disconnect errors.
-    }
+    try { Disconnect-MgGraph | Out-Null } catch { }
 }
