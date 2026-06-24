@@ -3,7 +3,8 @@
 Exports Microsoft Entra ID group membership, department mapping, group density, owners, and an HTML dashboard.
 
 .DESCRIPTION
-Cache-backed Microsoft Graph identity audit. The script refreshes users, groups, group memberships, and owners into JSON cache files, then builds CSV evidence and a local HTML dashboard from cache. This avoids re-reading the full tenant every time.
+Graph REST-backed identity audit report. The script uses Invoke-MgGraphRequest with raw JSON parsing to avoid typed Graph SDK deserialization issues.
+It produces CSV evidence files and a local HTML dashboard.
 #>
 
 [CmdletBinding()]
@@ -12,7 +13,6 @@ param(
     [string] ${ClientId},
     [string] ${CertificateThumbprint},
     [string] ${OutputRoot} = ".\IdentityAudit-Evidence",
-    [string] ${CacheRoot} = ".\IdentityAudit-Cache",
     [string] ${GroupIdsFile},
     [switch] ${IncludeTransitiveMembership},
     [switch] ${SecurityOnly},
@@ -22,14 +22,6 @@ param(
     [switch] ${IsEmpty},
     [int] ${MinGroupMembersCount} = 0,
     [decimal] ${HighDensityPctThreshold} = 5.0,
-    [int] ${CacheMaxAgeHours} = 168,
-    [switch] ${Menu},
-    [switch] ${RefreshUsers},
-    [switch] ${RefreshGroups},
-    [switch] ${RefreshMemberships},
-    [switch] ${RefreshOwners},
-    [switch] ${RefreshAll},
-    [switch] ${UseCacheOnly},
     [switch] ${SkipOwners},
     [switch] ${InstallModules},
     [switch] ${OpenDashboard}
@@ -37,40 +29,65 @@ param(
 
 ${ErrorActionPreference} = "Stop"
 
-function Write-Stage { param([string] ${Message}) Write-Host "[IdentityAudit] ${Message}" -ForegroundColor Cyan }
-function Write-Warn { param([string] ${Message}) Write-Host "[IdentityAudit][WARN] ${Message}" -ForegroundColor Yellow }
+function Write-Stage {
+    param([Parameter(Mandatory)] [string] ${Message})
+    Write-Host "[IdentityAudit] ${Message}" -ForegroundColor Cyan
+}
+
+function Write-Warn {
+    param([Parameter(Mandatory)] [string] ${Message})
+    Write-Host "[IdentityAudit][WARN] ${Message}" -ForegroundColor Yellow
+}
 
 function Ensure-Module {
     param([Parameter(Mandatory)] [string] ${Name})
+
     if (-not (Get-Module -ListAvailable -Name ${Name})) {
         if (${InstallModules}.IsPresent) {
             Write-Stage "Installing ${Name}"
             Install-Module ${Name} -Scope CurrentUser -Force -AllowClobber
         }
-        else { throw "Required module '${Name}' is not installed. Re-run with -InstallModules or install it manually." }
+        else {
+            throw "Required module '${Name}' is not installed. Re-run with -InstallModules or install it manually."
+        }
     }
+
     Import-Module ${Name} -ErrorAction Stop
 }
 
 function Get-P {
-    param(${Object}, [string] ${Name})
+    param(
+        ${Object},
+        [Parameter(Mandatory)] [string] ${Name}
+    )
+
     if ($null -eq ${Object}) { return $null }
+
     try {
         ${Prop} = ${Object}.PSObject.Properties[${Name}]
         if ($null -ne ${Prop}) { return ${Prop}.Value }
-    } catch { }
-    try { return ${Object}[${Name}] } catch { }
+    }
+    catch { }
+
+    try {
+        return ${Object}[${Name}]
+    }
+    catch { }
+
     try {
         ${Additional} = ${Object}.AdditionalProperties
         if ($null -ne ${Additional}) {
-            try { return ${Additional}[${Name}] } catch { }
+            return ${Additional}[${Name}]
         }
-    } catch { }
+    }
+    catch { }
+
     return $null
 }
 
 function Invoke-GraphGetJson {
     param([Parameter(Mandatory)] [string] ${Uri})
+
     try {
         ${Response} = Invoke-MgGraphRequest -Method GET -Uri ${Uri} -OutputType HttpResponseMessage
         ${Content} = ${Response}.Content.ReadAsStringAsync().GetAwaiter().GetResult()
@@ -84,31 +101,29 @@ function Invoke-GraphGetJson {
 
 function Invoke-GraphPagedJson {
     param([Parameter(Mandatory)] [string] ${Uri})
+
     ${Rows} = New-Object System.Collections.Generic.List[object]
     ${NextUri} = ${Uri}
+
     while (-not [string]::IsNullOrWhiteSpace([string] ${NextUri})) {
         ${Page} = Invoke-GraphGetJson -Uri ${NextUri}
         ${Values} = Get-P -Object ${Page} -Name "value"
-        foreach (${Item} in @(${Values})) { if ($null -ne ${Item}) { ${Rows}.Add(${Item}) } }
+
+        foreach (${Item} in @(${Values})) {
+            if ($null -ne ${Item}) { ${Rows}.Add(${Item}) }
+        }
+
         ${NextUri} = Get-P -Object ${Page} -Name "@odata.nextLink"
     }
+
     return ${Rows}.ToArray()
-}
-
-function Save-CacheJson { param(${Rows}, [string] ${Path}) @(${Rows}) | ConvertTo-Json -Depth 100 | Out-File -FilePath ${Path} -Encoding utf8 }
-function Read-CacheJson { param([string] ${Path}) if (-not (Test-Path ${Path})) { return @() } ${Raw}=Get-Content -Path ${Path} -Raw; if ([string]::IsNullOrWhiteSpace(${Raw})) { return @() } return @(${Raw} | ConvertFrom-Json -Depth 100) }
-
-function Test-CacheFresh {
-    param([string] ${Path})
-    if (-not (Test-Path ${Path})) { return $false }
-    if (${CacheMaxAgeHours} -le 0) { return $true }
-    ${AgeHours} = ((Get-Date) - (Get-Item ${Path}).LastWriteTime).TotalHours
-    return (${AgeHours} -le ${CacheMaxAgeHours})
 }
 
 function Get-DirectoryObjectType {
     param(${Object})
+
     ${TypeValue} = [string](Get-P -Object ${Object} -Name "@odata.type")
+
     switch -Regex (${TypeValue}) {
         "user$"             { return "User" }
         "group$"            { return "Group" }
@@ -120,14 +135,30 @@ function Get-DirectoryObjectType {
     }
 }
 
-function Get-DisplayName { param(${Object}) ${V}=Get-P ${Object} "displayName"; if([string]::IsNullOrWhiteSpace([string]${V})){${V}=Get-P ${Object} "userPrincipalName"}; if([string]::IsNullOrWhiteSpace([string]${V})){${V}=Get-P ${Object} "mail"}; return ${V} }
+function Get-DisplayName {
+    param(${Object})
+
+    ${Value} = Get-P -Object ${Object} -Name "displayName"
+    if ([string]::IsNullOrWhiteSpace([string] ${Value})) { ${Value} = Get-P -Object ${Object} -Name "userPrincipalName" }
+    if ([string]::IsNullOrWhiteSpace([string] ${Value})) { ${Value} = Get-P -Object ${Object} -Name "mail" }
+    return ${Value}
+}
+
+function Get-GroupTypesText {
+    param(${Group})
+
+    ${GroupTypes} = Get-P -Object ${Group} -Name "groupTypes"
+    if ($null -eq ${GroupTypes}) { return "" }
+    return @(${GroupTypes}) -join ";"
+}
 
 function Get-GroupCategory {
     param(${Group})
-    ${GroupTypes} = Get-P ${Group} "groupTypes"
-    ${GroupTypesText} = if (${GroupTypes}) { @(${GroupTypes}) -join ";" } else { "" }
-    ${SecurityEnabled} = Get-P ${Group} "securityEnabled"
-    ${MailEnabled} = Get-P ${Group} "mailEnabled"
+
+    ${GroupTypesText} = Get-GroupTypesText -Group ${Group}
+    ${SecurityEnabled} = Get-P -Object ${Group} -Name "securityEnabled"
+    ${MailEnabled} = Get-P -Object ${Group} -Name "mailEnabled"
+
     if (${GroupTypesText} -match "Unified") { return "Microsoft365" }
     if (${SecurityEnabled} -eq $true -and ${MailEnabled} -eq $true) { return "MailEnabledSecurity" }
     if (${SecurityEnabled} -eq $true -and ${MailEnabled} -ne $true) { return "Security" }
@@ -135,251 +166,515 @@ function Get-GroupCategory {
     return "Other"
 }
 
-function ConvertTo-Percent { param([decimal]${Numerator},[decimal]${Denominator}) if(${Denominator} -le 0){return [decimal]0}; return [math]::Round((${Numerator}/${Denominator})*100,2) }
-function HtmlEncode { param(${Value}) if($null -eq ${Value}){return ""}; return [System.Net.WebUtility]::HtmlEncode([string]${Value}) }
+function ConvertTo-Percent {
+    param(
+        [decimal] ${Numerator},
+        [decimal] ${Denominator}
+    )
+
+    if (${Denominator} -le 0) { return [decimal]0 }
+    return [math]::Round((${Numerator} / ${Denominator}) * 100, 2)
+}
+
+function HtmlEncode {
+    param(${Value})
+    if ($null -eq ${Value}) { return "" }
+    return [System.Net.WebUtility]::HtmlEncode([string] ${Value})
+}
 
 function HtmlTable {
-    param([string]${Title}, [object[]]${Rows}, [string[]]${Columns}, [int]${MaxRows}=25)
-    ${Html}="<section class='panel'><h2>$(HtmlEncode ${Title})</h2>"
-    if(-not ${Rows} -or ${Rows}.Count -eq 0){ return ${Html}+"<p class='muted'>No records found.</p></section>" }
-    ${Html}+="<table><thead><tr>"
-    foreach(${C} in ${Columns}){ ${Html}+="<th>$(HtmlEncode ${C})</th>" }
-    ${Html}+="</tr></thead><tbody>"
-    foreach(${R} in (${Rows}|Select-Object -First ${MaxRows})){
-        ${Html}+="<tr>"
-        foreach(${C} in ${Columns}){ ${V}=""; if(${R}.PSObject.Properties.Name -contains ${C}){${V}=${R}.${C}}; ${Html}+="<td>$(HtmlEncode ${V})</td>" }
-        ${Html}+="</tr>"
+    param(
+        [Parameter(Mandatory)] [string] ${Title},
+        [Parameter(Mandatory)] [object[]] ${Rows},
+        [Parameter(Mandatory)] [string[]] ${Columns},
+        [int] ${MaxRows} = 25
+    )
+
+    ${Html} = "<section class='panel'><h2>$(HtmlEncode ${Title})</h2>"
+
+    if (-not ${Rows} -or ${Rows}.Count -eq 0) {
+        ${Html} += "<p class='muted'>No records found.</p></section>"
+        return ${Html}
     }
-    return ${Html}+"</tbody></table></section>"
+
+    ${Html} += "<table><thead><tr>"
+    foreach (${Column} in ${Columns}) { ${Html} += "<th>$(HtmlEncode ${Column})</th>" }
+    ${Html} += "</tr></thead><tbody>"
+
+    foreach (${Row} in (${Rows} | Select-Object -First ${MaxRows})) {
+        ${Html} += "<tr>"
+        foreach (${Column} in ${Columns}) {
+            ${Value} = ""
+            if (${Row}.PSObject.Properties.Name -contains ${Column}) { ${Value} = ${Row}.${Column} }
+            ${Html} += "<td>$(HtmlEncode ${Value})</td>"
+        }
+        ${Html} += "</tr>"
+    }
+
+    ${Html} += "</tbody></table></section>"
+    return ${Html}
 }
 
-function Show-IdentityAuditMenu {
-    Write-Host ""
-    Write-Host "Identity Audit v1" -ForegroundColor Cyan
-    Write-Host "1. Generate report from cache; refresh missing or expired cache"
-    Write-Host "2. Refresh users cache, then generate report"
-    Write-Host "3. Refresh groups cache, memberships, and owners, then generate report"
-    Write-Host "4. Refresh memberships cache, then generate report"
-    Write-Host "5. Refresh owners cache, then generate report"
-    Write-Host "6. Refresh all cache, then generate report"
-    Write-Host "7. Generate report from cache only"
-    Write-Host "Q. Quit"
-    return (Read-Host "Select an option")
+function Export-CsvSafe {
+    param(
+        ${Rows},
+        [Parameter(Mandatory)] [string] ${Path}
+    )
+
+    @(${Rows}) | Export-Csv -Path ${Path} -NoTypeInformation
 }
 
-function Connect-IdentityAuditGraph {
-    Ensure-Module -Name Microsoft.Graph.Authentication
+Write-Stage "Preparing modules"
+Ensure-Module -Name Microsoft.Graph.Authentication
+
+${RunId} = Get-Date -Format "yyyyMMdd-HHmmss"
+${OutputDir} = Join-Path ${OutputRoot} ${RunId}
+New-Item -ItemType Directory -Path ${OutputDir} -Force | Out-Null
+
+${ExecutionMode} = "Delegated"
+${MembershipMode} = "Direct"
+if (${IncludeTransitiveMembership}.IsPresent) { ${MembershipMode} = "Transitive" }
+
+try {
     Write-Stage "Connecting to Microsoft Graph"
+
     if (-not [string]::IsNullOrWhiteSpace(${TenantId}) -and -not [string]::IsNullOrWhiteSpace(${ClientId}) -and -not [string]::IsNullOrWhiteSpace(${CertificateThumbprint})) {
+        ${ExecutionMode} = "AppOnlyCertificate"
         Connect-MgGraph -TenantId ${TenantId} -ClientId ${ClientId} -CertificateThumbprint ${CertificateThumbprint} -NoWelcome
-        return "AppOnlyCertificate"
     }
-    Connect-MgGraph -Scopes @("User.Read.All","Group.Read.All","GroupMember.Read.All","Directory.Read.All") -NoWelcome
-    return "Delegated"
-}
-
-function Get-UsersFromGraph {
-    Write-Stage "Refreshing users cache"
-    ${Uri}='/v1.0/users?$select=id,displayName,userPrincipalName,mail,department,jobTitle,companyName,accountEnabled,userType,employeeId,createdDateTime&$top=999'
-    return @(Invoke-GraphPagedJson -Uri ${Uri})
-}
-
-function Get-GroupsFromGraph {
-    Write-Stage "Refreshing groups cache"
-    ${AdvancedUri}='/v1.0/groups?$select=id,displayName,description,mail,mailEnabled,securityEnabled,groupTypes,membershipRule,membershipRuleProcessingState,isAssignableToRole,createdDateTime,visibility&$top=999'
-    try { return @(Invoke-GraphPagedJson -Uri ${AdvancedUri}) }
-    catch {
-        Write-Warn "Advanced group properties failed. Retrying with baseline properties. $($_.Exception.Message)"
-        ${BasicUri}='/v1.0/groups?$select=id,displayName,description,mail,mailEnabled,securityEnabled,groupTypes,createdDateTime&$top=999'
-        return @(Invoke-GraphPagedJson -Uri ${BasicUri})
+    else {
+        Connect-MgGraph -Scopes @("User.Read.All", "Group.Read.All", "GroupMember.Read.All", "Directory.Read.All") -NoWelcome
     }
-}
 
-function Get-MembersFromGraph {
-    param([object[]]${Groups})
-    Write-Stage "Refreshing group membership cache"
-    ${Rows}=New-Object System.Collections.Generic.List[object]
-    ${Mode}=if(${IncludeTransitiveMembership}.IsPresent){"Transitive"}else{"Direct"}
-    ${Count}=0
-    foreach(${G} in ${Groups}){
-        ${Count}++
-        ${Gid}=Get-P ${G} "id"; ${Gname}=Get-P ${G} "displayName"
-        Write-Progress -Activity "Refreshing memberships" -Status ${Gname} -PercentComplete ((${Count}/[math]::Max(1,${Groups}.Count))*100)
-        ${Endpoint}=if(${IncludeTransitiveMembership}.IsPresent){"transitiveMembers"}else{"members"}
-        try { ${Members}=@(Invoke-GraphPagedJson -Uri "/v1.0/groups/${Gid}/${Endpoint}?`$select=id,displayName,userPrincipalName,mail&`$top=999") }
-        catch { Write-Warn "Member read failed for group '${Gname}' (${Gid}): $($_.Exception.Message)"; ${Members}=@() }
-        foreach(${M} in ${Members}){
-            ${Rows}.Add([pscustomobject]@{
-                GroupId=${Gid}; GroupName=${Gname}; GroupMail=(Get-P ${G} "mail"); GroupCategory=(Get-GroupCategory ${G});
-                GroupSecurityEnabled=(Get-P ${G} "securityEnabled"); GroupMailEnabled=(Get-P ${G} "mailEnabled");
-                GroupTypes=(if((Get-P ${G} "groupTypes")){@(Get-P ${G} "groupTypes") -join ";"}else{""});
-                GroupIsAssignableToRole=(Get-P ${G} "isAssignableToRole"); GroupMembershipRule=(Get-P ${G} "membershipRule");
-                MembershipRuleState=(Get-P ${G} "membershipRuleProcessingState"); MembershipMode=${Mode};
-                MemberId=(Get-P ${M} "id"); MemberDisplayName=(Get-DisplayName ${M}); MemberUPN=(Get-P ${M} "userPrincipalName");
-                MemberMail=(Get-P ${M} "mail"); MemberType=(Get-DirectoryObjectType ${M})
+    ${Context} = Get-MgContext
+    if ([string]::IsNullOrWhiteSpace(${TenantId})) { ${TenantId} = ${Context}.TenantId }
+
+    Write-Stage "Collecting users"
+    ${UsersUri} = '/v1.0/users?$select=id,displayName,userPrincipalName,mail,department,jobTitle,companyName,accountEnabled,userType,employeeId,createdDateTime&$top=999'
+    ${RawUsers} = @(Invoke-GraphPagedJson -Uri ${UsersUri})
+
+    ${Users} = @(
+        foreach (${User} in ${RawUsers}) {
+            [pscustomobject]@{
+                Id                = Get-P -Object ${User} -Name "id"
+                DisplayName       = Get-P -Object ${User} -Name "displayName"
+                UserPrincipalName = Get-P -Object ${User} -Name "userPrincipalName"
+                Mail              = Get-P -Object ${User} -Name "mail"
+                Department        = Get-P -Object ${User} -Name "department"
+                JobTitle          = Get-P -Object ${User} -Name "jobTitle"
+                CompanyName       = Get-P -Object ${User} -Name "companyName"
+                AccountEnabled    = Get-P -Object ${User} -Name "accountEnabled"
+                UserType          = Get-P -Object ${User} -Name "userType"
+                EmployeeId        = Get-P -Object ${User} -Name "employeeId"
+                CreatedDateTime   = Get-P -Object ${User} -Name "createdDateTime"
+            }
+        }
+    )
+
+    ${UsersById} = @{}
+    foreach (${User} in ${Users}) {
+        if (-not [string]::IsNullOrWhiteSpace([string] ${User}.Id)) { ${UsersById}[${User}.Id] = ${User} }
+    }
+
+    ${EnabledUserCount} = @(${Users} | Where-Object { ${_}.AccountEnabled -eq $true }).Count
+    ${TotalUserCount} = @(${Users}).Count
+    ${NoDepartmentUserCount} = @(${Users} | Where-Object { [string]::IsNullOrWhiteSpace([string] ${_}.Department) }).Count
+
+    Write-Stage "Collecting groups"
+    ${AdvancedGroupsUri} = '/v1.0/groups?$select=id,displayName,description,mail,mailEnabled,securityEnabled,groupTypes,membershipRule,membershipRuleProcessingState,isAssignableToRole,createdDateTime,visibility&$top=999'
+    ${BasicGroupsUri} = '/v1.0/groups?$select=id,displayName,description,mail,mailEnabled,securityEnabled,groupTypes,createdDateTime&$top=999'
+
+    if (-not [string]::IsNullOrWhiteSpace(${GroupIdsFile})) {
+        if (-not (Test-Path -Path ${GroupIdsFile})) { throw "GroupIdsFile not found: ${GroupIdsFile}" }
+        ${GroupIds} = @(Get-Content -Path ${GroupIdsFile} | Where-Object { -not [string]::IsNullOrWhiteSpace([string] ${_}) })
+        ${RawGroups} = @()
+        foreach (${GroupId} in ${GroupIds}) {
+            ${CleanGroupId} = ${GroupId}.Trim()
+            try {
+                ${RawGroups} += Invoke-GraphGetJson -Uri "/v1.0/groups/${CleanGroupId}?`$select=id,displayName,description,mail,mailEnabled,securityEnabled,groupTypes,membershipRule,membershipRuleProcessingState,isAssignableToRole,createdDateTime,visibility"
+            }
+            catch {
+                Write-Warn "Advanced group read failed for ${CleanGroupId}. Retrying baseline properties. $($_.Exception.Message)"
+                ${RawGroups} += Invoke-GraphGetJson -Uri "/v1.0/groups/${CleanGroupId}?`$select=id,displayName,description,mail,mailEnabled,securityEnabled,groupTypes,createdDateTime"
+            }
+        }
+    }
+    else {
+        try {
+            ${RawGroups} = @(Invoke-GraphPagedJson -Uri ${AdvancedGroupsUri})
+        }
+        catch {
+            Write-Warn "Advanced group properties failed. Retrying baseline group properties. $($_.Exception.Message)"
+            ${RawGroups} = @(Invoke-GraphPagedJson -Uri ${BasicGroupsUri})
+        }
+    }
+
+    ${FilteredGroups} = @(
+        foreach (${Group} in ${RawGroups}) {
+            ${Category} = Get-GroupCategory -Group ${Group}
+            if (${SecurityOnly}.IsPresent -and ${Category} -ne "Security") { continue }
+            if (${MailEnabledSecurityOnly}.IsPresent -and ${Category} -ne "MailEnabledSecurity") { continue }
+            if (${DistributionListOnly}.IsPresent -and ${Category} -ne "DistributionList") { continue }
+            if (${Microsoft365Only}.IsPresent -and ${Category} -ne "Microsoft365") { continue }
+            ${Group}
+        }
+    )
+
+    ${OwnerRows} = New-Object System.Collections.Generic.List[object]
+    ${MemberRows} = New-Object System.Collections.Generic.List[object]
+    ${GroupRows} = New-Object System.Collections.Generic.List[object]
+    ${GroupCount} = 0
+
+    foreach (${Group} in ${FilteredGroups}) {
+        ${GroupCount}++
+        ${GroupId} = Get-P -Object ${Group} -Name "id"
+        ${GroupName} = Get-P -Object ${Group} -Name "displayName"
+        ${GroupMail} = Get-P -Object ${Group} -Name "mail"
+        ${GroupCategory} = Get-GroupCategory -Group ${Group}
+        ${GroupTypesText} = Get-GroupTypesText -Group ${Group}
+        ${GroupSecurityEnabled} = Get-P -Object ${Group} -Name "securityEnabled"
+        ${GroupMailEnabled} = Get-P -Object ${Group} -Name "mailEnabled"
+        ${GroupRoleAssignable} = Get-P -Object ${Group} -Name "isAssignableToRole"
+        ${GroupRule} = Get-P -Object ${Group} -Name "membershipRule"
+        ${RuleState} = Get-P -Object ${Group} -Name "membershipRuleProcessingState"
+
+        ${PercentComplete} = (${GroupCount} / [math]::Max(1, @(${FilteredGroups}).Count)) * 100
+        Write-Progress -Activity "Collecting group membership" -Status ${GroupName} -PercentComplete ${PercentComplete}
+
+        ${Endpoint} = "members"
+        if (${IncludeTransitiveMembership}.IsPresent) { ${Endpoint} = "transitiveMembers" }
+
+        try {
+            ${Members} = @(Invoke-GraphPagedJson -Uri "/v1.0/groups/${GroupId}/${Endpoint}?`$select=id,displayName,userPrincipalName,mail&`$top=999")
+        }
+        catch {
+            Write-Warn "Member read failed for group '${GroupName}' (${GroupId}): $($_.Exception.Message)"
+            ${Members} = @()
+        }
+
+        if (-not ${SkipOwners}.IsPresent) {
+            try {
+                ${Owners} = @(Invoke-GraphPagedJson -Uri "/v1.0/groups/${GroupId}/owners?`$select=id,displayName,userPrincipalName,mail&`$top=999")
+            }
+            catch {
+                Write-Warn "Owner read failed for group '${GroupName}' (${GroupId}): $($_.Exception.Message)"
+                ${Owners} = @()
+            }
+
+            foreach (${Owner} in ${Owners}) {
+                ${OwnerRows}.Add([pscustomobject]@{
+                    GroupId          = ${GroupId}
+                    GroupName        = ${GroupName}
+                    GroupCategory    = ${GroupCategory}
+                    OwnerId          = Get-P -Object ${Owner} -Name "id"
+                    OwnerDisplayName = Get-DisplayName -Object ${Owner}
+                    OwnerUPN         = Get-P -Object ${Owner} -Name "userPrincipalName"
+                    OwnerType        = Get-DirectoryObjectType -Object ${Owner}
+                })
+            }
+        }
+
+        foreach (${Member} in ${Members}) {
+            ${MemberId} = Get-P -Object ${Member} -Name "id"
+            ${MemberType} = Get-DirectoryObjectType -Object ${Member}
+            ${MemberDisplayName} = Get-DisplayName -Object ${Member}
+            ${MemberUPN} = Get-P -Object ${Member} -Name "userPrincipalName"
+            ${MemberMail} = Get-P -Object ${Member} -Name "mail"
+            ${MemberDepartment} = ""
+            ${MemberJobTitle} = ""
+            ${MemberCompanyName} = ""
+            ${MemberAccountEnabled} = $null
+            ${MemberUserType} = ""
+            ${MemberEmployeeId} = ""
+
+            if (${MemberType} -eq "User" -and ${UsersById}.ContainsKey(${MemberId})) {
+                ${Profile} = ${UsersById}[${MemberId}]
+                ${MemberDepartment} = ${Profile}.Department
+                ${MemberJobTitle} = ${Profile}.JobTitle
+                ${MemberCompanyName} = ${Profile}.CompanyName
+                ${MemberAccountEnabled} = ${Profile}.AccountEnabled
+                ${MemberUserType} = ${Profile}.UserType
+                ${MemberEmployeeId} = ${Profile}.EmployeeId
+                if ([string]::IsNullOrWhiteSpace([string] ${MemberUPN})) { ${MemberUPN} = ${Profile}.UserPrincipalName }
+                if ([string]::IsNullOrWhiteSpace([string] ${MemberMail})) { ${MemberMail} = ${Profile}.Mail }
+            }
+
+            ${MemberRows}.Add([pscustomobject]@{
+                GroupId                 = ${GroupId}
+                GroupName               = ${GroupName}
+                GroupMail               = ${GroupMail}
+                GroupCategory           = ${GroupCategory}
+                GroupSecurityEnabled    = ${GroupSecurityEnabled}
+                GroupMailEnabled        = ${GroupMailEnabled}
+                GroupTypes              = ${GroupTypesText}
+                GroupIsAssignableToRole = ${GroupRoleAssignable}
+                GroupMembershipRule     = ${GroupRule}
+                MembershipRuleState     = ${RuleState}
+                MembershipMode          = ${MembershipMode}
+                MemberId                = ${MemberId}
+                MemberDisplayName       = ${MemberDisplayName}
+                MemberUPN               = ${MemberUPN}
+                MemberMail              = ${MemberMail}
+                MemberType              = ${MemberType}
+                MemberDepartment        = ${MemberDepartment}
+                MemberJobTitle          = ${MemberJobTitle}
+                MemberCompanyName       = ${MemberCompanyName}
+                MemberAccountEnabled    = ${MemberAccountEnabled}
+                MemberUserType          = ${MemberUserType}
+                MemberEmployeeId        = ${MemberEmployeeId}
             })
         }
     }
-    Write-Progress -Activity "Refreshing memberships" -Completed
-    return ${Rows}.ToArray()
-}
 
-function Get-OwnersFromGraph {
-    param([object[]]${Groups})
-    Write-Stage "Refreshing group owner cache"
-    ${Rows}=New-Object System.Collections.Generic.List[object]
-    ${Count}=0
-    foreach(${G} in ${Groups}){
-        ${Count}++
-        ${Gid}=Get-P ${G} "id"; ${Gname}=Get-P ${G} "displayName"
-        Write-Progress -Activity "Refreshing owners" -Status ${Gname} -PercentComplete ((${Count}/[math]::Max(1,${Groups}.Count))*100)
-        try { ${Owners}=@(Invoke-GraphPagedJson -Uri "/v1.0/groups/${Gid}/owners?`$select=id,displayName,userPrincipalName,mail&`$top=999") }
-        catch { Write-Warn "Owner read failed for group '${Gname}' (${Gid}): $($_.Exception.Message)"; ${Owners}=@() }
-        foreach(${O} in ${Owners}){
-            ${Rows}.Add([pscustomobject]@{ GroupId=${Gid}; GroupName=${Gname}; GroupCategory=(Get-GroupCategory ${G}); OwnerId=(Get-P ${O} "id"); OwnerDisplayName=(Get-DisplayName ${O}); OwnerUPN=(Get-P ${O} "userPrincipalName"); OwnerType=(Get-DirectoryObjectType ${O}) })
+    Write-Progress -Activity "Collecting group membership" -Completed
+
+    ${TotalMembershipRows} = @(${MemberRows}).Count
+    ${OwnerCountByGroupId} = @{}
+    foreach (${OwnerGroup} in (@(${OwnerRows}) | Group-Object GroupId)) { ${OwnerCountByGroupId}[${OwnerGroup}.Name] = ${OwnerGroup}.Count }
+
+    foreach (${Group} in ${FilteredGroups}) {
+        ${GroupId} = Get-P -Object ${Group} -Name "id"
+        ${GroupName} = Get-P -Object ${Group} -Name "displayName"
+        ${GroupCategory} = Get-GroupCategory -Group ${Group}
+        ${RowsForGroup} = @(${MemberRows} | Where-Object { ${_}.GroupId -eq ${GroupId} })
+        ${MemberCount} = ${RowsForGroup}.Count
+        ${UserMembers} = @(${RowsForGroup} | Where-Object { ${_}.MemberType -eq "User" })
+        ${UniqueUserCount} = @(${UserMembers} | Select-Object -ExpandProperty MemberId -Unique).Count
+        ${ActiveUserCount} = @(${UserMembers} | Where-Object { ${_}.MemberAccountEnabled -eq $true } | Select-Object -ExpandProperty MemberId -Unique).Count
+        ${Departments} = @(${UserMembers} | Where-Object { -not [string]::IsNullOrWhiteSpace([string] ${_}.MemberDepartment) } | Select-Object -ExpandProperty MemberDepartment -Unique)
+        ${DepartmentCount} = @(${Departments}).Count
+        ${BlankDepartmentCount} = @(${UserMembers} | Where-Object { [string]::IsNullOrWhiteSpace([string] ${_}.MemberDepartment) }).Count
+        ${OwnerCount} = 0
+        if (${OwnerCountByGroupId}.ContainsKey(${GroupId})) { ${OwnerCount} = ${OwnerCountByGroupId}[${GroupId}] }
+
+        ${DepartmentGroups} = @(${UserMembers} | Where-Object { -not [string]::IsNullOrWhiteSpace([string] ${_}.MemberDepartment) } | Group-Object MemberDepartment | Sort-Object -Property @{ Expression = "Count"; Descending = $true })
+        ${PrimaryDepartment} = ""
+        ${PrimaryDepartmentCount} = 0
+        if (${DepartmentGroups}.Count -gt 0) {
+            ${PrimaryDepartment} = ${DepartmentGroups}[0].Name
+            ${PrimaryDepartmentCount} = ${DepartmentGroups}[0].Count
         }
-    }
-    Write-Progress -Activity "Refreshing owners" -Completed
-    return ${Rows}.ToArray()
-}
 
-New-Item -ItemType Directory -Path ${CacheRoot} -Force | Out-Null
-${UsersCache}=Join-Path ${CacheRoot} "users.json"
-${GroupsCache}=Join-Path ${CacheRoot} "groups.json"
-${MembersCache}=Join-Path ${CacheRoot} (if(${IncludeTransitiveMembership}.IsPresent){"members.transitive.json"}else{"members.direct.json"})
-${OwnersCache}=Join-Path ${CacheRoot} "owners.json"
+        ${DensityPct} = ConvertTo-Percent -Numerator ${MemberCount} -Denominator ${TotalMembershipRows}
+        ${CoveragePct} = ConvertTo-Percent -Numerator ${ActiveUserCount} -Denominator ${EnabledUserCount}
+        ${PrimaryDepartmentPct} = ConvertTo-Percent -Numerator ${PrimaryDepartmentCount} -Denominator @(${UserMembers}).Count
 
-${DoRefreshUsers}=[bool]${RefreshUsers}.IsPresent
-${DoRefreshGroups}=[bool]${RefreshGroups}.IsPresent
-${DoRefreshMembers}=[bool]${RefreshMemberships}.IsPresent
-${DoRefreshOwners}=[bool]${RefreshOwners}.IsPresent
-${DoRefreshAll}=[bool]${RefreshAll}.IsPresent
-${UseCacheOnlyLocal}=[bool]${UseCacheOnly}.IsPresent
+        if (${IsEmpty}.IsPresent -and ${MemberCount} -ne 0) { continue }
+        if (${MinGroupMembersCount} -gt 0 -and ${MemberCount} -lt ${MinGroupMembersCount}) { continue }
 
-if(${Menu}.IsPresent){
-    ${Choice}=Show-IdentityAuditMenu
-    switch -Regex (${Choice}) {
-        '^1$' { }
-        '^2$' { ${DoRefreshUsers}=$true }
-        '^3$' { ${DoRefreshGroups}=$true; ${DoRefreshMembers}=$true; ${DoRefreshOwners}=$true }
-        '^4$' { ${DoRefreshMembers}=$true }
-        '^5$' { ${DoRefreshOwners}=$true }
-        '^6$' { ${DoRefreshAll}=$true }
-        '^7$' { ${UseCacheOnlyLocal}=$true }
-        '^[qQ]$' { return }
-        default { throw "Invalid menu option: ${Choice}" }
-    }
-}
+        ${MembershipRule} = Get-P -Object ${Group} -Name "membershipRule"
+        ${IsDynamicGroup} = -not [string]::IsNullOrWhiteSpace([string] ${MembershipRule})
+        ${IsHighDensityGroup} = ${DensityPct} -ge ${HighDensityPctThreshold}
+        ${IsCrossDepartmentGroup} = ${DepartmentCount} -gt 1
 
-if(${DoRefreshAll}){ ${DoRefreshUsers}=$true; ${DoRefreshGroups}=$true; ${DoRefreshMembers}=$true; ${DoRefreshOwners}=$true }
-if(-not (Test-CacheFresh ${UsersCache})){ ${DoRefreshUsers}=$true }
-if(-not (Test-CacheFresh ${GroupsCache})){ ${DoRefreshGroups}=$true }
-if(-not (Test-CacheFresh ${MembersCache})){ ${DoRefreshMembers}=$true }
-if(-not ${SkipOwners}.IsPresent -and -not (Test-CacheFresh ${OwnersCache})){ ${DoRefreshOwners}=$true }
-if(${DoRefreshGroups}){ ${DoRefreshMembers}=$true; if(-not ${SkipOwners}.IsPresent){${DoRefreshOwners}=$true} }
-
-${ExecutionMode}="CacheOnly"
-try{
-    if(${UseCacheOnlyLocal}){
-        if(-not (Test-Path ${UsersCache}) -or -not (Test-Path ${GroupsCache}) -or -not (Test-Path ${MembersCache})){ throw "Cache-only mode requested, but required cache files do not exist." }
-    }
-    elseif(${DoRefreshUsers} -or ${DoRefreshGroups} -or ${DoRefreshMembers} -or ${DoRefreshOwners}){
-        ${ExecutionMode}=Connect-IdentityAuditGraph
+        ${GroupRows}.Add([pscustomobject]@{
+            GroupId                     = ${GroupId}
+            GroupName                   = ${GroupName}
+            GroupMail                   = Get-P -Object ${Group} -Name "mail"
+            GroupCategory               = ${GroupCategory}
+            SecurityEnabled             = Get-P -Object ${Group} -Name "securityEnabled"
+            MailEnabled                 = Get-P -Object ${Group} -Name "mailEnabled"
+            GroupTypes                  = Get-GroupTypesText -Group ${Group}
+            IsDynamicGroup              = ${IsDynamicGroup}
+            MembershipRule              = ${MembershipRule}
+            MembershipRuleState         = Get-P -Object ${Group} -Name "membershipRuleProcessingState"
+            IsAssignableToRole          = Get-P -Object ${Group} -Name "isAssignableToRole"
+            OwnerCount                  = ${OwnerCount}
+            MemberCount                 = ${MemberCount}
+            UserMemberCount             = ${UniqueUserCount}
+            ActiveUserMemberCount       = ${ActiveUserCount}
+            DepartmentCount             = ${DepartmentCount}
+            BlankDepartmentMemberCount  = ${BlankDepartmentCount}
+            PrimaryDepartment           = ${PrimaryDepartment}
+            PrimaryDepartmentCount      = ${PrimaryDepartmentCount}
+            PrimaryDepartmentPctOfGroup = ${PrimaryDepartmentPct}
+            MembershipDensityPct        = ${DensityPct}
+            UserCoveragePct             = ${CoveragePct}
+            IsCrossDepartmentGroup      = ${IsCrossDepartmentGroup}
+            IsHighDensityGroup          = ${IsHighDensityGroup}
+            CreatedDateTime             = Get-P -Object ${Group} -Name "createdDateTime"
+            Visibility                  = Get-P -Object ${Group} -Name "visibility"
+        })
     }
 
-    if(${DoRefreshUsers} -and -not ${UseCacheOnlyLocal}){ Save-CacheJson -Rows (Get-UsersFromGraph) -Path ${UsersCache} }
-    if(${DoRefreshGroups} -and -not ${UseCacheOnlyLocal}){ Save-CacheJson -Rows (Get-GroupsFromGraph) -Path ${GroupsCache} }
+    ${GroupRowsForOutput} = @(${GroupRows} | Sort-Object -Property @{ Expression = "MembershipDensityPct"; Descending = $true }, @{ Expression = "GroupName"; Ascending = $true })
 
-    ${RawUsers}=Read-CacheJson ${UsersCache}
-    ${RawGroups}=Read-CacheJson ${GroupsCache}
-
-    if(${DoRefreshMembers} -and -not ${UseCacheOnlyLocal}){ Save-CacheJson -Rows (Get-MembersFromGraph -Groups ${RawGroups}) -Path ${MembersCache} }
-    if(-not ${SkipOwners}.IsPresent -and ${DoRefreshOwners} -and -not ${UseCacheOnlyLocal}){ Save-CacheJson -Rows (Get-OwnersFromGraph -Groups ${RawGroups}) -Path ${OwnersCache} }
-
-    ${Users}=@(foreach(${U} in ${RawUsers}){[pscustomobject]@{Id=(Get-P ${U} "id");DisplayName=(Get-P ${U} "displayName");UserPrincipalName=(Get-P ${U} "userPrincipalName");Mail=(Get-P ${U} "mail");Department=(Get-P ${U} "department");JobTitle=(Get-P ${U} "jobTitle");CompanyName=(Get-P ${U} "companyName");AccountEnabled=(Get-P ${U} "accountEnabled");UserType=(Get-P ${U} "userType");EmployeeId=(Get-P ${U} "employeeId");CreatedDateTime=(Get-P ${U} "createdDateTime")}})
-    ${Groups}=@(foreach(${G} in ${RawGroups}){${G}})
-
-    if(-not [string]::IsNullOrWhiteSpace(${GroupIdsFile})){
-        ${Wanted}=@{}; Get-Content ${GroupIdsFile} | Where-Object { -not [string]::IsNullOrWhiteSpace([string]${_}) } | ForEach-Object { ${Wanted}[${_}.Trim()]=$true }
-        ${Groups}=@(${Groups}|Where-Object{${Wanted}.ContainsKey((Get-P ${_} "id"))})
+    if (${IsEmpty}.IsPresent) {
+        ${MemberRowsForOutput} = @()
+    }
+    elseif (${MinGroupMembersCount} -gt 0) {
+        ${AllowedGroupIds} = @{}
+        foreach (${GroupRow} in ${GroupRowsForOutput}) { ${AllowedGroupIds}[${GroupRow}.GroupId] = $true }
+        ${MemberRowsForOutput} = @(${MemberRows} | Where-Object { ${AllowedGroupIds}.ContainsKey(${_}.GroupId) })
+    }
+    else {
+        ${MemberRowsForOutput} = @(${MemberRows})
     }
 
-    ${FilteredGroupIds}=@{}
-    ${FilteredGroups}=@(foreach(${G} in ${Groups}){${Cat}=Get-GroupCategory ${G}; if(${SecurityOnly}.IsPresent -and ${Cat} -ne "Security"){continue}; if(${MailEnabledSecurityOnly}.IsPresent -and ${Cat} -ne "MailEnabledSecurity"){continue}; if(${DistributionListOnly}.IsPresent -and ${Cat} -ne "DistributionList"){continue}; if(${Microsoft365Only}.IsPresent -and ${Cat} -ne "Microsoft365"){continue}; ${FilteredGroupIds}[(Get-P ${G} "id")]=$true; ${G}})
+    Write-Stage "Building department/group matrix"
+    ${DepartmentGroupRows} = New-Object System.Collections.Generic.List[object]
+    ${DepartmentUserTotals} = @{}
+    foreach (${DepartmentGroup} in (@(${Users}) | Group-Object Department)) {
+        ${DepartmentName} = ${DepartmentGroup}.Name
+        if ([string]::IsNullOrWhiteSpace([string] ${DepartmentName})) { ${DepartmentName} = "(blank)" }
+        ${DepartmentUserTotals}[${DepartmentName}] = ${DepartmentGroup}.Count
+    }
 
-    ${UsersById}=@{}; foreach(${U} in ${Users}){ if(-not [string]::IsNullOrWhiteSpace([string]${U}.Id)){${UsersById}[${U}.Id]=${U}} }
-    ${MemberRowsCached}=Read-CacheJson ${MembersCache}
-    ${OwnerRows}=if(${SkipOwners}.IsPresent){@()}else{@(Read-CacheJson ${OwnersCache}|Where-Object{${FilteredGroupIds}.ContainsKey(${_}.GroupId)})}
-
-    ${MemberRows}=@(foreach(${M} in ${MemberRowsCached}){
-        if(-not ${FilteredGroupIds}.ContainsKey(${M}.GroupId)){continue}
-        ${Profile}=if(${UsersById}.ContainsKey(${M}.MemberId)){${UsersById}[${M}.MemberId]}else{$null}
-        [pscustomobject]@{
-            GroupId=${M}.GroupId; GroupName=${M}.GroupName; GroupMail=${M}.GroupMail; GroupCategory=${M}.GroupCategory; GroupSecurityEnabled=${M}.GroupSecurityEnabled; GroupMailEnabled=${M}.GroupMailEnabled; GroupTypes=${M}.GroupTypes; GroupIsAssignableToRole=${M}.GroupIsAssignableToRole; GroupMembershipRule=${M}.GroupMembershipRule; MembershipRuleState=${M}.MembershipRuleState; MembershipMode=${M}.MembershipMode;
-            MemberId=${M}.MemberId; MemberDisplayName=${M}.MemberDisplayName; MemberUPN=(if([string]::IsNullOrWhiteSpace([string]${M}.MemberUPN) -and $null -ne ${Profile}){${Profile}.UserPrincipalName}else{${M}.MemberUPN}); MemberMail=(if([string]::IsNullOrWhiteSpace([string]${M}.MemberMail) -and $null -ne ${Profile}){${Profile}.Mail}else{${M}.MemberMail}); MemberType=${M}.MemberType;
-            MemberDepartment=(if($null -ne ${Profile}){${Profile}.Department}else{""}); MemberJobTitle=(if($null -ne ${Profile}){${Profile}.JobTitle}else{""}); MemberCompanyName=(if($null -ne ${Profile}){${Profile}.CompanyName}else{""}); MemberAccountEnabled=(if($null -ne ${Profile}){${Profile}.AccountEnabled}else{$null}); MemberUserType=(if($null -ne ${Profile}){${Profile}.UserType}else{""}); MemberEmployeeId=(if($null -ne ${Profile}){${Profile}.EmployeeId}else{""})
+    foreach (${GroupDept} in (@(${MemberRowsForOutput}) | Where-Object { ${_}.MemberType -eq "User" } | Group-Object GroupId, MemberDepartment)) {
+        ${Sample} = ${GroupDept}.Group[0]
+        ${DepartmentName} = ${Sample}.MemberDepartment
+        if ([string]::IsNullOrWhiteSpace([string] ${DepartmentName})) { ${DepartmentName} = "(blank)" }
+        ${UsersInDepartmentInGroup} = @(${GroupDept}.Group | Select-Object -ExpandProperty MemberId -Unique).Count
+        ${DepartmentTotalUsers} = 0
+        if (${DepartmentUserTotals}.ContainsKey(${DepartmentName})) { ${DepartmentTotalUsers} = ${DepartmentUserTotals}[${DepartmentName}] }
+        ${MatchingGroupRow} = @(${GroupRowsForOutput} | Where-Object { ${_}.GroupId -eq ${Sample}.GroupId } | Select-Object -First 1)
+        ${GroupUserMemberCount} = 0
+        ${GroupDensityPct} = 0
+        if (${MatchingGroupRow}.Count -gt 0) {
+            ${GroupUserMemberCount} = ${MatchingGroupRow}[0].UserMemberCount
+            ${GroupDensityPct} = ${MatchingGroupRow}[0].MembershipDensityPct
         }
-    })
 
-    ${RunId}=Get-Date -Format "yyyyMMdd-HHmmss"; ${OutputDir}=Join-Path ${OutputRoot} ${RunId}; New-Item -ItemType Directory -Path ${OutputDir} -Force|Out-Null
-    ${TotalMembershipRows}=@(${MemberRows}).Count; ${EnabledUserCount}=@(${Users}|Where-Object{${_}.AccountEnabled -eq $true}).Count; ${TotalUserCount}=@(${Users}).Count; ${NoDepartmentUserCount}=@(${Users}|Where-Object{[string]::IsNullOrWhiteSpace([string]${_}.Department)}).Count
-    ${OwnerCountByGroupId}=@{}; foreach(${OG} in (@(${OwnerRows})|Group-Object GroupId)){${OwnerCountByGroupId}[${OG}.Name]=${OG}.Count}
-    ${GroupRows}=New-Object System.Collections.Generic.List[object]
-
-    foreach(${G} in ${FilteredGroups}){
-        ${Gid}=Get-P ${G} "id"; ${RowsForGroup}=@(${MemberRows}|Where-Object{${_}.GroupId -eq ${Gid}}); ${UserMembers}=@(${RowsForGroup}|Where-Object{${_}.MemberType -eq "User"}); ${Depts}=@(${UserMembers}|Where-Object{-not [string]::IsNullOrWhiteSpace([string]${_}.MemberDepartment)}|Select-Object -ExpandProperty MemberDepartment -Unique); ${DeptGroups}=@(${UserMembers}|Where-Object{-not [string]::IsNullOrWhiteSpace([string]${_}.MemberDepartment)}|Group-Object MemberDepartment|Sort-Object -Property @{Expression="Count";Descending=$true}); ${PrimaryDept}=""; ${PrimaryDeptCount}=0; if(${DeptGroups}.Count -gt 0){${PrimaryDept}=${DeptGroups}[0].Name;${PrimaryDeptCount}=${DeptGroups}[0].Count}
-        ${MemberCount}=${RowsForGroup}.Count; ${UniqueUserCount}=@(${UserMembers}|Select-Object -ExpandProperty MemberId -Unique).Count; ${ActiveUserCount}=@(${UserMembers}|Where-Object{${_}.MemberAccountEnabled -eq $true}|Select-Object -ExpandProperty MemberId -Unique).Count; ${Density}=ConvertTo-Percent ${MemberCount} ${TotalMembershipRows}; ${Coverage}=ConvertTo-Percent ${ActiveUserCount} ${EnabledUserCount}; ${OwnerCount}=if(${OwnerCountByGroupId}.ContainsKey(${Gid})){${OwnerCountByGroupId}[${Gid}]}else{0}; if(${IsEmpty}.IsPresent -and ${MemberCount} -ne 0){continue}; if(${MinGroupMembersCount} -gt 0 -and ${MemberCount} -lt ${MinGroupMembersCount}){continue}
-        ${GroupRows}.Add([pscustomobject]@{GroupId=${Gid};GroupName=(Get-P ${G} "displayName");GroupMail=(Get-P ${G} "mail");GroupCategory=(Get-GroupCategory ${G});SecurityEnabled=(Get-P ${G} "securityEnabled");MailEnabled=(Get-P ${G} "mailEnabled");GroupTypes=(if((Get-P ${G} "groupTypes")){@(Get-P ${G} "groupTypes") -join ";"}else{""});IsDynamicGroup=(-not [string]::IsNullOrWhiteSpace([string](Get-P ${G} "membershipRule")));MembershipRule=(Get-P ${G} "membershipRule");MembershipRuleState=(Get-P ${G} "membershipRuleProcessingState");IsAssignableToRole=(Get-P ${G} "isAssignableToRole");OwnerCount=${OwnerCount};MemberCount=${MemberCount};UserMemberCount=${UniqueUserCount};ActiveUserMemberCount=${ActiveUserCount};DepartmentCount=@(${Depts}).Count;BlankDepartmentMemberCount=@(${UserMembers}|Where-Object{[string]::IsNullOrWhiteSpace([string]${_}.MemberDepartment)}).Count;PrimaryDepartment=${PrimaryDept};PrimaryDepartmentCount=${PrimaryDeptCount};PrimaryDepartmentPctOfGroup=(ConvertTo-Percent ${PrimaryDeptCount} @(${UserMembers}).Count);MembershipDensityPct=${Density};UserCoveragePct=${Coverage};IsCrossDepartmentGroup=(@(${Depts}).Count -gt 1);IsHighDensityGroup=(${Density} -ge ${HighDensityPctThreshold});CreatedDateTime=(Get-P ${G} "createdDateTime");Visibility=(Get-P ${G} "visibility")})
+        ${DepartmentGroupRows}.Add([pscustomobject]@{
+            Department                    = ${DepartmentName}
+            GroupId                       = ${Sample}.GroupId
+            GroupName                     = ${Sample}.GroupName
+            GroupCategory                 = ${Sample}.GroupCategory
+            UsersInDepartmentInGroup      = ${UsersInDepartmentInGroup}
+            DepartmentTotalUsers          = ${DepartmentTotalUsers}
+            DepartmentCoveragePctForGroup = ConvertTo-Percent -Numerator ${UsersInDepartmentInGroup} -Denominator ${DepartmentTotalUsers}
+            GroupShareFromDepartmentPct   = ConvertTo-Percent -Numerator ${UsersInDepartmentInGroup} -Denominator ${GroupUserMemberCount}
+            GroupMembershipDensityPct     = ${GroupDensityPct}
+            IsRoleAssignableGroup         = ${Sample}.GroupIsAssignableToRole
+            IsDynamicGroup                = -not [string]::IsNullOrWhiteSpace([string] ${Sample}.GroupMembershipRule)
+        })
     }
 
-    ${GroupRowsForOutput}=@(${GroupRows}|Sort-Object -Property @{Expression="MembershipDensityPct";Descending=$true},@{Expression="GroupName";Ascending=$true})
-    ${AllowedGroupIds}=@{}; foreach(${GR} in ${GroupRowsForOutput}){${AllowedGroupIds}[${GR}.GroupId]=$true}
-    ${MemberRowsForOutput}=if(${IsEmpty}.IsPresent){@()}else{@(${MemberRows}|Where-Object{${AllowedGroupIds}.ContainsKey(${_}.GroupId)})}
+    ${DepartmentGroupRowsForOutput} = @(${DepartmentGroupRows} | Sort-Object -Property @{ Expression = "GroupMembershipDensityPct"; Descending = $true }, @{ Expression = "GroupName"; Ascending = $true }, @{ Expression = "Department"; Ascending = $true })
 
-    ${DepartmentUserTotals}=@{}; foreach(${DG} in (@(${Users})|Group-Object Department)){${DN}=if([string]::IsNullOrWhiteSpace([string]${DG}.Name)){"(blank)"}else{${DG}.Name};${DepartmentUserTotals}[${DN}]=${DG}.Count}
-    ${DepartmentGroupRows}=New-Object System.Collections.Generic.List[object]
-    foreach(${GD} in (@(${MemberRowsForOutput}|Where-Object{${_}.MemberType -eq "User"})|Group-Object GroupId,MemberDepartment)){
-        ${Sample}=${GD}.Group[0]; ${DN}=if([string]::IsNullOrWhiteSpace([string]${Sample}.MemberDepartment)){"(blank)"}else{${Sample}.MemberDepartment}; ${Match}=@(${GroupRowsForOutput}|Where-Object{${_}.GroupId -eq ${Sample}.GroupId}|Select-Object -First 1); ${UsersInGroup}=@(${GD}.Group|Select-Object -ExpandProperty MemberId -Unique).Count; ${DeptTotal}=if(${DepartmentUserTotals}.ContainsKey(${DN})){${DepartmentUserTotals}[${DN}]}else{0}; ${GroupUserTotal}=if(${Match}.Count -gt 0){${Match}[0].UserMemberCount}else{0}; ${GroupDensity}=if(${Match}.Count -gt 0){${Match}[0].MembershipDensityPct}else{0}
-        ${DepartmentGroupRows}.Add([pscustomobject]@{Department=${DN};GroupId=${Sample}.GroupId;GroupName=${Sample}.GroupName;GroupCategory=${Sample}.GroupCategory;UsersInDepartmentInGroup=${UsersInGroup};DepartmentTotalUsers=${DeptTotal};DepartmentCoveragePctForGroup=(ConvertTo-Percent ${UsersInGroup} ${DeptTotal});GroupShareFromDepartmentPct=(ConvertTo-Percent ${UsersInGroup} ${GroupUserTotal});GroupMembershipDensityPct=${GroupDensity};IsRoleAssignableGroup=${Sample}.GroupIsAssignableToRole;IsDynamicGroup=(-not [string]::IsNullOrWhiteSpace([string]${Sample}.GroupMembershipRule))})
-    }
-    ${DepartmentGroupRowsForOutput}=@(${DepartmentGroupRows}|Sort-Object -Property @{Expression="GroupMembershipDensityPct";Descending=$true},@{Expression="GroupName";Ascending=$true},@{Expression="Department";Ascending=$true})
-
-    ${ExceptionRows}=New-Object System.Collections.Generic.List[object]
-    foreach(${GR} in ${GroupRowsForOutput}){
-        if(-not ${SkipOwners}.IsPresent -and ${GR}.OwnerCount -eq 0){${ExceptionRows}.Add([pscustomobject]@{Severity="Medium";Finding="Group has no owner";GroupId=${GR}.GroupId;GroupName=${GR}.GroupName;Detail="OwnerCount=0"})}
-        if(${GR}.MemberCount -eq 0){${ExceptionRows}.Add([pscustomobject]@{Severity="Low";Finding="Empty group";GroupId=${GR}.GroupId;GroupName=${GR}.GroupName;Detail="MemberCount=0"})}
-        if(${GR}.IsCrossDepartmentGroup){${ExceptionRows}.Add([pscustomobject]@{Severity="Review";Finding="Cross-department group";GroupId=${GR}.GroupId;GroupName=${GR}.GroupName;Detail="DepartmentCount=$(${GR}.DepartmentCount); PrimaryDepartment=$(${GR}.PrimaryDepartment); PrimaryDepartmentPctOfGroup=$(${GR}.PrimaryDepartmentPctOfGroup)"})}
-        if(${GR}.BlankDepartmentMemberCount -gt 0){${ExceptionRows}.Add([pscustomobject]@{Severity="Review";Finding="Members missing department";GroupId=${GR}.GroupId;GroupName=${GR}.GroupName;Detail="BlankDepartmentMemberCount=$(${GR}.BlankDepartmentMemberCount)"})}
-        if(${GR}.IsHighDensityGroup){${ExceptionRows}.Add([pscustomobject]@{Severity="Review";Finding="High group density";GroupId=${GR}.GroupId;GroupName=${GR}.GroupName;Detail="MembershipDensityPct=$(${GR}.MembershipDensityPct); Threshold=${HighDensityPctThreshold}"})}
-        if(${GR}.IsAssignableToRole -eq $true){${ExceptionRows}.Add([pscustomobject]@{Severity="High";Finding="Role-assignable group";GroupId=${GR}.GroupId;GroupName=${GR}.GroupName;Detail="IsAssignableToRole=True"})}
+    Write-Stage "Building exception review"
+    ${ExceptionRows} = New-Object System.Collections.Generic.List[object]
+    foreach (${GroupRow} in ${GroupRowsForOutput}) {
+        if (-not ${SkipOwners}.IsPresent -and ${GroupRow}.OwnerCount -eq 0) { ${ExceptionRows}.Add([pscustomobject]@{ Severity = "Medium"; Finding = "Group has no owner"; GroupId = ${GroupRow}.GroupId; GroupName = ${GroupRow}.GroupName; Detail = "OwnerCount=0" }) }
+        if (${GroupRow}.MemberCount -eq 0) { ${ExceptionRows}.Add([pscustomobject]@{ Severity = "Low"; Finding = "Empty group"; GroupId = ${GroupRow}.GroupId; GroupName = ${GroupRow}.GroupName; Detail = "MemberCount=0" }) }
+        if (${GroupRow}.IsCrossDepartmentGroup -eq $true) { ${ExceptionRows}.Add([pscustomobject]@{ Severity = "Review"; Finding = "Cross-department group"; GroupId = ${GroupRow}.GroupId; GroupName = ${GroupRow}.GroupName; Detail = "DepartmentCount=$(${GroupRow}.DepartmentCount); PrimaryDepartment=$(${GroupRow}.PrimaryDepartment); PrimaryDepartmentPctOfGroup=$(${GroupRow}.PrimaryDepartmentPctOfGroup)" }) }
+        if (${GroupRow}.BlankDepartmentMemberCount -gt 0) { ${ExceptionRows}.Add([pscustomobject]@{ Severity = "Review"; Finding = "Members missing department"; GroupId = ${GroupRow}.GroupId; GroupName = ${GroupRow}.GroupName; Detail = "BlankDepartmentMemberCount=$(${GroupRow}.BlankDepartmentMemberCount)" }) }
+        if (${GroupRow}.IsHighDensityGroup -eq $true) { ${ExceptionRows}.Add([pscustomobject]@{ Severity = "Review"; Finding = "High group density"; GroupId = ${GroupRow}.GroupId; GroupName = ${GroupRow}.GroupName; Detail = "MembershipDensityPct=$(${GroupRow}.MembershipDensityPct); Threshold=${HighDensityPctThreshold}" }) }
+        if (${GroupRow}.IsAssignableToRole -eq $true) { ${ExceptionRows}.Add([pscustomobject]@{ Severity = "High"; Finding = "Role-assignable group"; GroupId = ${GroupRow}.GroupId; GroupName = ${GroupRow}.GroupName; Detail = "IsAssignableToRole=True" }) }
     }
 
     Write-Stage "Writing CSV evidence"
-    ${Users}|Export-Csv (Join-Path ${OutputDir} "IdentityAudit-Users.csv") -NoTypeInformation
-    ${GroupRowsForOutput}|Export-Csv (Join-Path ${OutputDir} "IdentityAudit-Groups.csv") -NoTypeInformation
-    ${MemberRowsForOutput}|Export-Csv (Join-Path ${OutputDir} "IdentityAudit-GroupMembers.csv") -NoTypeInformation
-    ${OwnerRows}|Export-Csv (Join-Path ${OutputDir} "IdentityAudit-GroupOwners.csv") -NoTypeInformation
-    ${DepartmentGroupRowsForOutput}|Export-Csv (Join-Path ${OutputDir} "IdentityAudit-DepartmentGroupMatrix.csv") -NoTypeInformation
-    ${GroupRowsForOutput}|Select-Object GroupName,GroupId,GroupCategory,MemberCount,UserMemberCount,ActiveUserMemberCount,MembershipDensityPct,UserCoveragePct,DepartmentCount,PrimaryDepartment,PrimaryDepartmentPctOfGroup,OwnerCount,IsDynamicGroup,IsAssignableToRole,IsHighDensityGroup|Export-Csv (Join-Path ${OutputDir} "IdentityAudit-GroupDensity.csv") -NoTypeInformation
-    ${ExceptionRows}|Export-Csv (Join-Path ${OutputDir} "IdentityAudit-Exceptions.csv") -NoTypeInformation
+    Export-CsvSafe -Rows ${Users} -Path (Join-Path ${OutputDir} "IdentityAudit-Users.csv")
+    Export-CsvSafe -Rows ${GroupRowsForOutput} -Path (Join-Path ${OutputDir} "IdentityAudit-Groups.csv")
+    Export-CsvSafe -Rows ${MemberRowsForOutput} -Path (Join-Path ${OutputDir} "IdentityAudit-GroupMembers.csv")
+    Export-CsvSafe -Rows ${OwnerRows} -Path (Join-Path ${OutputDir} "IdentityAudit-GroupOwners.csv")
+    Export-CsvSafe -Rows ${DepartmentGroupRowsForOutput} -Path (Join-Path ${OutputDir} "IdentityAudit-DepartmentGroupMatrix.csv")
+    ${DensityRows} = ${GroupRowsForOutput} | Select-Object GroupName, GroupId, GroupCategory, MemberCount, UserMemberCount, ActiveUserMemberCount, MembershipDensityPct, UserCoveragePct, DepartmentCount, PrimaryDepartment, PrimaryDepartmentPctOfGroup, OwnerCount, IsDynamicGroup, IsAssignableToRole, IsHighDensityGroup
+    Export-CsvSafe -Rows ${DensityRows} -Path (Join-Path ${OutputDir} "IdentityAudit-GroupDensity.csv")
+    Export-CsvSafe -Rows ${ExceptionRows} -Path (Join-Path ${OutputDir} "IdentityAudit-Exceptions.csv")
 
-    ${TopDensity}=@(${GroupRowsForOutput}|Sort-Object -Property @{Expression="MembershipDensityPct";Descending=$true},@{Expression="GroupName";Ascending=$true}|Select-Object -First 25); ${TopCoverage}=@(${GroupRowsForOutput}|Sort-Object -Property @{Expression="UserCoveragePct";Descending=$true},@{Expression="GroupName";Ascending=$true}|Select-Object -First 25); ${CrossDept}=@(${GroupRowsForOutput}|Where-Object{$_.IsCrossDepartmentGroup}|Sort-Object -Property @{Expression="DepartmentCount";Descending=$true},@{Expression="MembershipDensityPct";Descending=$true}|Select-Object -First 25); ${Ownerless}=@(${GroupRowsForOutput}|Where-Object{$_.OwnerCount -eq 0}|Select-Object -First 25); ${Dynamic}=@(${GroupRowsForOutput}|Where-Object{$_.IsDynamicGroup}|Select-Object -First 25); ${Hotspots}=@(${DepartmentGroupRowsForOutput}|Select-Object -First 25)
-    ${Css}="<style>body{margin:0;padding:32px;background:#f5f7fb;color:#172033;font-family:Segoe UI,Arial,sans-serif}.meta,.muted,footer{color:#62708a;font-size:13px}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px;margin:18px 0 24px}.card,.panel{background:#fff;border:1px solid #d9e0ec;border-radius:14px;box-shadow:0 3px 10px rgba(23,32,51,.04)}.card{padding:16px}.label{color:#62708a;font-size:12px;text-transform:uppercase;letter-spacing:.05em}.value{font-size:28px;font-weight:700;margin-top:8px}.panel{padding:18px;margin:16px 0;overflow:auto}table{border-collapse:collapse;width:100%;font-size:13px}th{text-align:left;color:#34415a;border-bottom:1px solid #d9e0ec;padding:8px;white-space:nowrap}td{border-bottom:1px solid #edf1f7;padding:8px;vertical-align:top}tr:hover td{background:#f9fbff}</style>"
-    ${DashboardPath}=Join-Path ${OutputDir} "IdentityAudit-Dashboard.html"
-    ${Html}=@"
-<!doctype html><html><head><meta charset="utf-8"><title>Identity Audit Dashboard</title>${Css}</head><body>
-<header><h1>Identity Audit Dashboard</h1><div class="meta">Run ID: $(HtmlEncode ${RunId}) | Mode: $(HtmlEncode ${ExecutionMode}) | Membership: $(if(${IncludeTransitiveMembership}.IsPresent){"Transitive"}else{"Direct"}) | Cache: $(HtmlEncode ${CacheRoot})</div></header>
-<div class="cards"><div class="card"><div class="label">Groups</div><div class="value">$(@(${GroupRowsForOutput}).Count)</div></div><div class="card"><div class="label">Users</div><div class="value">${TotalUserCount}</div></div><div class="card"><div class="label">Membership rows</div><div class="value">${TotalMembershipRows}</div></div><div class="card"><div class="label">Ownerless groups</div><div class="value">$(@(${GroupRowsForOutput}|Where-Object{$_.OwnerCount -eq 0}).Count)</div></div><div class="card"><div class="label">Cross-dept groups</div><div class="value">$(@(${GroupRowsForOutput}|Where-Object{$_.IsCrossDepartmentGroup}).Count)</div></div><div class="card"><div class="label">High-density groups</div><div class="value">$(@(${GroupRowsForOutput}|Where-Object{$_.IsHighDensityGroup}).Count)</div></div><div class="card"><div class="label">Dynamic groups</div><div class="value">$(@(${GroupRowsForOutput}|Where-Object{$_.IsDynamicGroup}).Count)</div></div><div class="card"><div class="label">Users missing dept</div><div class="value">${NoDepartmentUserCount}</div></div></div>
-$(HtmlTable "Top group density by membership percentage" ${TopDensity} @("GroupName","GroupCategory","MemberCount","UserMemberCount","MembershipDensityPct","UserCoveragePct","DepartmentCount","PrimaryDepartment","PrimaryDepartmentPctOfGroup","OwnerCount","IsDynamicGroup","IsAssignableToRole"))
-$(HtmlTable "Top groups by enabled user coverage percentage" ${TopCoverage} @("GroupName","GroupCategory","ActiveUserMemberCount","UserCoveragePct","MembershipDensityPct","DepartmentCount","PrimaryDepartment","OwnerCount"))
-$(HtmlTable "Department / group hotspots" ${Hotspots} @("Department","GroupName","GroupCategory","UsersInDepartmentInGroup","DepartmentTotalUsers","DepartmentCoveragePctForGroup","GroupShareFromDepartmentPct","GroupMembershipDensityPct","IsRoleAssignableGroup","IsDynamicGroup"))
-$(HtmlTable "Cross-department groups" ${CrossDept} @("GroupName","GroupCategory","MemberCount","UserMemberCount","DepartmentCount","PrimaryDepartment","PrimaryDepartmentPctOfGroup","MembershipDensityPct","OwnerCount"))
-$(HtmlTable "Ownerless groups" ${Ownerless} @("GroupName","GroupCategory","MemberCount","UserMemberCount","MembershipDensityPct","DepartmentCount","IsDynamicGroup","IsAssignableToRole"))
-$(HtmlTable "Dynamic groups" ${Dynamic} @("GroupName","GroupCategory","MemberCount","UserMemberCount","MembershipDensityPct","UserCoveragePct","DepartmentCount","PrimaryDepartment","MembershipRule","MembershipRuleState"))
-<footer>Group density percentage = group membership rows divided by all membership rows observed in this run. User coverage percentage = enabled user members divided by all enabled users observed in this run.</footer></body></html>
+    Write-Stage "Writing dashboard"
+    ${TopDensityGroups} = @(${GroupRowsForOutput} | Sort-Object -Property @{ Expression = "MembershipDensityPct"; Descending = $true }, @{ Expression = "GroupName"; Ascending = $true } | Select-Object -First 25)
+    ${TopCoverageGroups} = @(${GroupRowsForOutput} | Sort-Object -Property @{ Expression = "UserCoveragePct"; Descending = $true }, @{ Expression = "GroupName"; Ascending = $true } | Select-Object -First 25)
+    ${CrossDepartmentGroups} = @(${GroupRowsForOutput} | Where-Object { ${_}.IsCrossDepartmentGroup -eq $true } | Sort-Object -Property @{ Expression = "DepartmentCount"; Descending = $true }, @{ Expression = "MembershipDensityPct"; Descending = $true }, @{ Expression = "GroupName"; Ascending = $true } | Select-Object -First 25)
+    ${OwnerlessGroups} = @(${GroupRowsForOutput} | Where-Object { ${_}.OwnerCount -eq 0 } | Sort-Object -Property @{ Expression = "MembershipDensityPct"; Descending = $true }, @{ Expression = "GroupName"; Ascending = $true } | Select-Object -First 25)
+    ${DynamicGroups} = @(${GroupRowsForOutput} | Where-Object { ${_}.IsDynamicGroup -eq $true } | Sort-Object -Property @{ Expression = "MembershipDensityPct"; Descending = $true }, @{ Expression = "GroupName"; Ascending = $true } | Select-Object -First 25)
+    ${DepartmentHotspots} = @(${DepartmentGroupRowsForOutput} | Sort-Object -Property @{ Expression = "GroupMembershipDensityPct"; Descending = $true }, @{ Expression = "UsersInDepartmentInGroup"; Descending = $true }, @{ Expression = "GroupName"; Ascending = $true } | Select-Object -First 25)
+
+    ${TotalGroups} = @(${GroupRowsForOutput}).Count
+    ${DynamicGroupCount} = @(${GroupRowsForOutput} | Where-Object { ${_}.IsDynamicGroup -eq $true }).Count
+    ${RoleAssignableGroupCount} = @(${GroupRowsForOutput} | Where-Object { ${_}.IsAssignableToRole -eq $true }).Count
+    ${OwnerlessGroupCount} = @(${GroupRowsForOutput} | Where-Object { ${_}.OwnerCount -eq 0 }).Count
+    ${CrossDepartmentGroupCount} = @(${GroupRowsForOutput} | Where-Object { ${_}.IsCrossDepartmentGroup -eq $true }).Count
+    ${HighDensityGroupCount} = @(${GroupRowsForOutput} | Where-Object { ${_}.IsHighDensityGroup -eq $true }).Count
+    ${DepartmentCountCard} = @(${Users} | Where-Object { -not [string]::IsNullOrWhiteSpace([string] ${_}.Department) } | Select-Object -ExpandProperty Department -Unique).Count
+
+    ${Css} = @"
+<style>
+body { margin:0; padding:32px; background:#f5f7fb; color:#172033; font-family:Segoe UI,Arial,sans-serif; }
+header { margin-bottom:24px; }
+h1 { margin:0 0 6px 0; font-size:28px; }
+h2 { margin:0 0 14px 0; font-size:18px; }
+.meta,.muted,footer { color:#62708a; font-size:13px; }
+.cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:14px; margin:18px 0 24px 0; }
+.card,.panel { background:#fff; border:1px solid #d9e0ec; border-radius:14px; box-shadow:0 3px 10px rgba(23,32,51,.04); }
+.card { padding:16px; }
+.card .label { color:#62708a; font-size:12px; text-transform:uppercase; letter-spacing:.05em; }
+.card .value { font-size:28px; font-weight:700; margin-top:8px; }
+.panel { padding:18px; margin:16px 0; overflow:auto; }
+table { border-collapse:collapse; width:100%; font-size:13px; }
+th { text-align:left; color:#34415a; border-bottom:1px solid #d9e0ec; padding:8px; white-space:nowrap; }
+td { border-bottom:1px solid #edf1f7; padding:8px; vertical-align:top; }
+tr:hover td { background:#f9fbff; }
+footer { margin-top:26px; font-size:12px; }
+</style>
 "@
-    ${Html}|Out-File ${DashboardPath} -Encoding utf8
-    @("# Identity Audit Evidence Manifest","","Run ID: ${RunId}","Execution mode: ${ExecutionMode}","Cache root: ${CacheRoot}","Membership mode: $(if(${IncludeTransitiveMembership}.IsPresent){"Transitive"}else{"Direct"})","","Read-only collection. No users, groups, roles, policies, or memberships are modified.")|Out-File (Join-Path ${OutputDir} "IdentityAudit-Manifest.md") -Encoding utf8
-    Write-Stage "Complete"; Write-Host "Output folder: ${OutputDir}"; Write-Host "Dashboard: ${DashboardPath}"; if(${OpenDashboard}.IsPresent){Invoke-Item ${DashboardPath}}
+
+    ${DashboardPath} = Join-Path ${OutputDir} "IdentityAudit-Dashboard.html"
+    ${DashboardHtml} = @"
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Identity Audit Dashboard</title>
+${Css}
+</head>
+<body>
+<header>
+  <h1>Identity Audit Dashboard</h1>
+  <div class="meta">Run ID: $(HtmlEncode ${RunId}) | Tenant: $(HtmlEncode ${TenantId}) | Membership mode: $(HtmlEncode ${MembershipMode})</div>
+</header>
+<div class="cards">
+  <div class="card"><div class="label">Groups</div><div class="value">${TotalGroups}</div></div>
+  <div class="card"><div class="label">Users</div><div class="value">${TotalUserCount}</div></div>
+  <div class="card"><div class="label">Membership rows</div><div class="value">${TotalMembershipRows}</div></div>
+  <div class="card"><div class="label">Departments</div><div class="value">${DepartmentCountCard}</div></div>
+  <div class="card"><div class="label">Ownerless groups</div><div class="value">${OwnerlessGroupCount}</div></div>
+  <div class="card"><div class="label">Cross-department groups</div><div class="value">${CrossDepartmentGroupCount}</div></div>
+  <div class="card"><div class="label">High-density groups</div><div class="value">${HighDensityGroupCount}</div></div>
+  <div class="card"><div class="label">Role-assignable groups</div><div class="value">${RoleAssignableGroupCount}</div></div>
+  <div class="card"><div class="label">Dynamic groups</div><div class="value">${DynamicGroupCount}</div></div>
+  <div class="card"><div class="label">Users missing dept</div><div class="value">${NoDepartmentUserCount}</div></div>
+</div>
+$(HtmlTable -Title "Top group density by membership percentage" -Rows ${TopDensityGroups} -Columns @("GroupName", "GroupCategory", "MemberCount", "UserMemberCount", "MembershipDensityPct", "UserCoveragePct", "DepartmentCount", "PrimaryDepartment", "PrimaryDepartmentPctOfGroup", "OwnerCount", "IsDynamicGroup", "IsAssignableToRole"))
+$(HtmlTable -Title "Top groups by enabled user coverage percentage" -Rows ${TopCoverageGroups} -Columns @("GroupName", "GroupCategory", "ActiveUserMemberCount", "UserCoveragePct", "MembershipDensityPct", "DepartmentCount", "PrimaryDepartment", "OwnerCount"))
+$(HtmlTable -Title "Department / group hotspots" -Rows ${DepartmentHotspots} -Columns @("Department", "GroupName", "GroupCategory", "UsersInDepartmentInGroup", "DepartmentTotalUsers", "DepartmentCoveragePctForGroup", "GroupShareFromDepartmentPct", "GroupMembershipDensityPct", "IsRoleAssignableGroup", "IsDynamicGroup"))
+$(HtmlTable -Title "Cross-department groups" -Rows ${CrossDepartmentGroups} -Columns @("GroupName", "GroupCategory", "MemberCount", "UserMemberCount", "DepartmentCount", "PrimaryDepartment", "PrimaryDepartmentPctOfGroup", "MembershipDensityPct", "OwnerCount"))
+$(HtmlTable -Title "Ownerless groups" -Rows ${OwnerlessGroups} -Columns @("GroupName", "GroupCategory", "MemberCount", "UserMemberCount", "MembershipDensityPct", "DepartmentCount", "IsDynamicGroup", "IsAssignableToRole"))
+$(HtmlTable -Title "Dynamic groups" -Rows ${DynamicGroups} -Columns @("GroupName", "GroupCategory", "MemberCount", "UserMemberCount", "MembershipDensityPct", "UserCoveragePct", "DepartmentCount", "PrimaryDepartment", "MembershipRule", "MembershipRuleState"))
+<footer>Group density percentage = this group's membership rows divided by all membership rows observed in this run. User coverage percentage = enabled user members in the group divided by all enabled users observed in this run.</footer>
+</body>
+</html>
+"@
+
+    ${DashboardHtml} | Out-File -FilePath ${DashboardPath} -Encoding utf8
+
+    @(
+        "# Identity Audit Evidence Manifest",
+        "",
+        "Run ID: ${RunId}",
+        "Run date/time: $((Get-Date).ToString('o'))",
+        "Tenant ID: ${TenantId}",
+        "Execution mode: ${ExecutionMode}",
+        "Membership mode: ${MembershipMode}",
+        "",
+        "## Outputs",
+        "- IdentityAudit-Users.csv",
+        "- IdentityAudit-Groups.csv",
+        "- IdentityAudit-GroupMembers.csv",
+        "- IdentityAudit-GroupOwners.csv",
+        "- IdentityAudit-DepartmentGroupMatrix.csv",
+        "- IdentityAudit-GroupDensity.csv",
+        "- IdentityAudit-Exceptions.csv",
+        "- IdentityAudit-Dashboard.html"
+    ) | Out-File -FilePath (Join-Path ${OutputDir} "IdentityAudit-Manifest.md") -Encoding utf8
+
+    Write-Stage "Complete"
+    Write-Host "Output folder: ${OutputDir}"
+    Write-Host "Dashboard: ${DashboardPath}"
+
+    if (${OpenDashboard}.IsPresent -and (Test-Path ${DashboardPath})) { Invoke-Item ${DashboardPath} }
 }
-finally{ try{Disconnect-MgGraph|Out-Null}catch{} }
+finally {
+    try { Disconnect-MgGraph | Out-Null } catch { }
+}
