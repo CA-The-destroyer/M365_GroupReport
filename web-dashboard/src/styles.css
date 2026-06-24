@@ -9,7 +9,7 @@ body {
   background: #f5f7fb;
 }
 
-button, input {
+button, input, select {
   font: inherit;
 }
 
@@ -22,8 +22,13 @@ button {
   cursor: pointer;
 }
 
-button:hover {
+button:hover:not(:disabled) {
   background: #eef3fb;
+}
+
+button:disabled {
+  opacity: .45;
+  cursor: not-allowed;
 }
 
 .app {
@@ -127,11 +132,12 @@ button:hover {
   white-space: nowrap;
 }
 
-.search, .filterGrid input {
+.search, .filterGrid input, .graphFilters input, .graphFilters select {
   border: 1px solid #ccd6e5;
   border-radius: 10px;
   padding: 10px 12px;
   box-sizing: border-box;
+  background: #ffffff;
 }
 
 .search {
@@ -176,22 +182,50 @@ pre {
   overflow: auto;
 }
 
-.filterGrid {
+.filterGrid, .graphFilters {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
   gap: 12px;
   margin: 12px 0;
 }
 
-.filterGrid label {
+.filterGrid label, .graphFilters label {
   display: flex;
   flex-direction: column;
   gap: 6px;
   color: #52627a;
+  font-size: 13px;
+}
+
+.checkLabel {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px !important;
+  padding-top: 25px;
+}
+
+.checkLabel input {
+  width: auto;
 }
 
 .graphPanel {
   min-height: 680px;
+}
+
+.graphToolbar .search {
+  flex: 1 1 320px;
+  width: auto;
+  margin: 0;
+}
+
+.pathBox {
+  border: 1px solid #f5c46b;
+  background: #fff7ed;
+  color: #7c2d12;
+  border-radius: 12px;
+  padding: 10px 12px;
+  margin: 10px 0 14px 0;
+  word-break: break-word;
 }
 
 .graphLayout {
