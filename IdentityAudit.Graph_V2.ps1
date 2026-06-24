@@ -1,10 +1,9 @@
 <#
 .SYNOPSIS
-Identity Audit Graph V2 entrypoint.
+Identity Audit Graph V2 compatibility entrypoint.
 
 .DESCRIPTION
-Versioned launcher for the Identity Audit Graph script.
-Adds Windows PowerShell compatibility for ConvertFrom-Json -Depth before invoking the core implementation.
+V2 now forwards to the self-contained V3 script to avoid the older core-script inline-if issue.
 #>
 
 [CmdletBinding()]
@@ -27,43 +26,15 @@ param(
     [switch] ${OpenDashboard}
 )
 
-# Windows PowerShell 5.1 does not support ConvertFrom-Json -Depth.
-# The core script was written for newer PowerShell behavior, so V2 safely ignores -Depth
-# while preserving pipeline behavior.
-function ConvertFrom-Json {
-    [CmdletBinding()]
-    param(
-        [Parameter(ValueFromPipeline = $true)]
-        [AllowNull()]
-        [string] ${InputObject},
-        [int] ${Depth}
-    )
-
-    begin {
-        ${Buffer} = New-Object System.Text.StringBuilder
-    }
-
-    process {
-        if ($null -ne ${InputObject}) {
-            [void] ${Buffer}.AppendLine(${InputObject})
-        }
-    }
-
-    end {
-        ${JsonText} = ${Buffer}.ToString()
-        if ([string]::IsNullOrWhiteSpace(${JsonText})) { return $null }
-        return Microsoft.PowerShell.Utility\ConvertFrom-Json -InputObject ${JsonText}
-    }
-}
-
 ${ScriptRootPath} = $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace(${ScriptRootPath})) {
     ${ScriptRootPath} = Split-Path -Parent $MyInvocation.MyCommand.Path
 }
 
-${CoreScriptPath} = Join-Path ${ScriptRootPath} "IdentityAudit.Graph.ps1"
-if (-not (Test-Path -Path ${CoreScriptPath})) {
-    throw "Core script not found: ${CoreScriptPath}"
+${TargetScriptPath} = Join-Path ${ScriptRootPath} "IdentityAudit.Graph_V3.ps1"
+if (-not (Test-Path -Path ${TargetScriptPath})) {
+    throw "V3 script not found: ${TargetScriptPath}"
 }
 
-& ${CoreScriptPath} @PSBoundParameters
+Write-Host "[IdentityAudit] V2 forwards to IdentityAudit.Graph_V3.ps1" -ForegroundColor Yellow
+& ${TargetScriptPath} @PSBoundParameters
