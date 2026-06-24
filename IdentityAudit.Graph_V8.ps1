@@ -1,9 +1,9 @@
 <#
 .SYNOPSIS
-Identity Audit Graph V8 entrypoint.
+Identity Audit Graph V8 compatibility entrypoint.
 
 .DESCRIPTION
-V8 patches the V7 graph analytics parser issue caused by invalid Sort-Object syntax in Windows PowerShell, then executes a corrected runtime copy.
+V8 now forwards to V9, which patches the graph analytics parser issue and preserves the repository dependency path when using runtime copies.
 #>
 
 [CmdletBinding()]
@@ -41,18 +41,10 @@ if ([string]::IsNullOrWhiteSpace(${ScriptRootPath})) {
     ${ScriptRootPath} = Split-Path -Parent $MyInvocation.MyCommand.Path
 }
 
-${SourceScriptPath} = Join-Path ${ScriptRootPath} "IdentityAudit.Graph_V7.ps1"
-if (-not (Test-Path -Path ${SourceScriptPath})) {
-    throw "V7 source script not found: ${SourceScriptPath}"
+${TargetScriptPath} = Join-Path ${ScriptRootPath} "IdentityAudit.Graph_V9.ps1"
+if (-not (Test-Path -Path ${TargetScriptPath})) {
+    throw "V9 script not found: ${TargetScriptPath}"
 }
 
-${PatchedScriptPath} = Join-Path ${env:TEMP} "IdentityAudit.Graph_V8.runtime.ps1"
-${ScriptText} = Get-Content -Path ${SourceScriptPath} -Raw
-
-# Fix invalid Sort-Object syntax: Sort-Object RiskScore -Descending,GroupName
-${ScriptText} = ${ScriptText}.Replace('$riskRows=@($riskRows|Sort-Object RiskScore -Descending,GroupName)', '$riskRows=@($riskRows|Sort-Object @{Expression=''RiskScore'';Descending=$true},@{Expression=''GroupName'';Ascending=$true})')
-
-${ScriptText} | Out-File -FilePath ${PatchedScriptPath} -Encoding utf8 -Force
-
-Write-Host "[IdentityAudit] V8 patched V7 graph analytics Sort-Object parser issue." -ForegroundColor Yellow
-& ${PatchedScriptPath} @PSBoundParameters
+Write-Host "[IdentityAudit] V8 forwards to IdentityAudit.Graph_V9.ps1" -ForegroundColor Yellow
+& ${TargetScriptPath} @PSBoundParameters
