@@ -34,6 +34,59 @@ V10 includes collection, caching, standard evidence output, standard dashboard o
 - Graph JSON for future interactive visualization
 - Separate graph dashboard
 
+## No-node static dashboard
+
+For locked-down workstations, use the static dashboard generator instead of React/Node:
+
+```powershell
+.\IdentityAudit.StaticDashboard.ps1 -OpenDashboard
+```
+
+It reads the latest run folder under `.\IdentityAudit-Evidence` and writes:
+
+```text
+IdentityAudit-StaticDashboard.html
+```
+
+The generated HTML is self-contained and requires no:
+
+- Node
+- npm
+- React
+- Vite
+- CDN
+- Internet access
+- Local web server
+
+It includes:
+
+- Executive summary
+- Group membership summaries
+- Group to users/members table
+- User/member to group associations table
+- Owner to group associations table
+- Risk findings
+- Privileged paths
+- Circular nesting
+- Browser-side CSV exports
+- Vanilla SVG graph explorer
+- Node search
+- Node type filtering
+- Edge type filtering
+- Minimum risk filtering
+- High-value group filtering
+- Expand selected node neighbors
+- Directed path search to a high-risk/high-value group
+- Visible graph node and edge export
+
+To target a specific run folder:
+
+```powershell
+.\IdentityAudit.StaticDashboard.ps1 `
+  -OutputFolder ".\IdentityAudit-Evidence\<run-folder>" `
+  -OpenDashboard
+```
+
 ## React web dashboard
 
 The React dashboard is under:
@@ -42,7 +95,7 @@ The React dashboard is under:
 web-dashboard
 ```
 
-It provides a richer UI over the generated evidence:
+It provides a richer UI over the generated evidence, but requires Node/npm:
 
 - Executive summary
 - Group drilldowns
@@ -55,7 +108,7 @@ It provides a richer UI over the generated evidence:
 
 ### Enhanced graph explorer
 
-The React graph page now supports:
+The React graph page supports:
 
 - Node type filtering: all, group, user, service principal, device, directory object
 - Edge type filtering: all, `MemberOf`, `OwnsGroup`
@@ -97,14 +150,14 @@ npm run dev
 
 Open the local URL shown by Vite.
 
-### Build static dashboard
+### Build static React dashboard
 
 ```powershell
 cd .\web-dashboard
 npm run build
 ```
 
-The static output is created under:
+The static React output is created under:
 
 ```text
 web-dashboard\dist
