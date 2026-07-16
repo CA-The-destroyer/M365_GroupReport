@@ -34,21 +34,21 @@ V10 includes collection, caching, standard evidence output, standard dashboard o
 - Graph JSON for future interactive visualization
 - Separate graph dashboard
 
-## No-node static dashboard
+## Static dashboard v2: correlation workflow
 
-For locked-down workstations, use the static dashboard generator instead of React/Node:
+For job-title to group correlation, use V2:
 
 ```powershell
-.\IdentityAudit.StaticDashboard.ps1 -OpenDashboard
+.\IdentityAudit.StaticDashboard_V2.ps1 -OpenDashboard
 ```
 
 It reads the latest run folder under `.\IdentityAudit-Evidence` and writes:
 
 ```text
-IdentityAudit-StaticDashboard.html
+IdentityAudit-StaticDashboard-v2.html
 ```
 
-The generated HTML is self-contained and requires no:
+V2 is self-contained and requires no:
 
 - Node
 - npm
@@ -58,7 +58,54 @@ The generated HTML is self-contained and requires no:
 - Internet access
 - Local web server
 
-It includes:
+V2 adds the **Correlation** tab for:
+
+- Job title to group correlation
+- Compare two job titles
+- Common groups between two job titles
+- Groups only present for Job Title A
+- Groups only present for Job Title B
+- Similarity score based on group overlap
+- Clickable department vectors
+- Clickable job title vectors
+- Active vector group-correlation table
+- Shift-click multi-user comparison set
+- Export job-title comparison CSV
+- Export active vector group CSV
+- Export active vector membership CSV
+
+Usage pattern:
+
+1. Open the V2 dashboard.
+2. Go to **Correlation**.
+3. Choose two job titles in the comparison dropdowns.
+4. Click job titles or departments anywhere they appear to add them as active vectors.
+5. Shift-click users in the membership tables to build a user comparison set.
+6. Export the comparison or active-vector tables.
+
+To target a specific run folder:
+
+```powershell
+.\IdentityAudit.StaticDashboard_V2.ps1 `
+  -OutputFolder ".\IdentityAudit-Evidence\<run-folder>" `
+  -OpenDashboard
+```
+
+## No-node static dashboard v1
+
+For the original no-node static dashboard:
+
+```powershell
+.\IdentityAudit.StaticDashboard.ps1 -OpenDashboard
+```
+
+It writes:
+
+```text
+IdentityAudit-StaticDashboard.html
+```
+
+V1 includes:
 
 - Executive summary
 - Group membership summaries
@@ -78,14 +125,6 @@ It includes:
 - Expand selected node neighbors
 - Directed path search to a high-risk/high-value group
 - Visible graph node and edge export
-
-To target a specific run folder:
-
-```powershell
-.\IdentityAudit.StaticDashboard.ps1 `
-  -OutputFolder ".\IdentityAudit-Evidence\<run-folder>" `
-  -OpenDashboard
-```
 
 ## React web dashboard
 
