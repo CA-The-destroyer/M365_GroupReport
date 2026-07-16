@@ -1,0 +1,261 @@
+:root {
+  color: #172033;
+  background: #f5f7fb;
+  font-family: Segoe UI, Arial, sans-serif;
+}
+
+body {
+  margin: 0;
+  background: #f5f7fb;
+}
+
+button, input, select {
+  font: inherit;
+}
+
+button {
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #172033;
+  border-radius: 10px;
+  padding: 9px 12px;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: #eef3fb;
+}
+
+button:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+.app {
+  max-width: 1680px;
+  margin: 0 auto;
+  padding: 28px;
+}
+
+.hero {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  background: #ffffff;
+  border: 1px solid #d9e0ec;
+  border-radius: 16px;
+  padding: 18px 20px;
+  margin-bottom: 16px;
+}
+
+.hero h1, .pageTitle {
+  margin: 0 0 6px 0;
+}
+
+.muted {
+  color: #667085;
+}
+
+.small {
+  font-size: 12px;
+}
+
+.navBar, .buttonRow, .graphToolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 18px 0;
+}
+
+.navButton.active {
+  background: #174ea6;
+  color: #ffffff;
+  border-color: #174ea6;
+}
+
+.statGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+  margin: 16px 0;
+}
+
+.statCard, .panel, .uploadBox {
+  background: #ffffff;
+  border: 1px solid #d9e0ec;
+  border-radius: 16px;
+  padding: 16px;
+  margin: 14px 0;
+}
+
+.statLabel {
+  color: #52627a;
+  font-size: 13px;
+}
+
+.statValue {
+  font-size: 30px;
+  font-weight: 750;
+  margin-top: 6px;
+}
+
+.statDetail {
+  margin-top: 6px;
+  color: #667085;
+  font-size: 12px;
+}
+
+.sectionHead {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.pill {
+  display: inline-block;
+  color: #52627a;
+  background: #eef3fb;
+  border: 1px solid #d8e1ee;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.search, .filterGrid input, .graphFilters input, .graphFilters select {
+  border: 1px solid #ccd6e5;
+  border-radius: 10px;
+  padding: 10px 12px;
+  box-sizing: border-box;
+  background: #ffffff;
+}
+
+.search {
+  width: 100%;
+  margin: 8px 0 12px 0;
+}
+
+.tableWrap {
+  max-height: 620px;
+  overflow: auto;
+  border: 1px solid #edf1f7;
+  border-radius: 10px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #ffffff;
+  font-size: 13px;
+}
+
+th, td {
+  border-bottom: 1px solid #edf1f7;
+  padding: 7px 9px;
+  text-align: left;
+  vertical-align: top;
+}
+
+th {
+  position: sticky;
+  top: 0;
+  background: #f8fafc;
+  z-index: 1;
+}
+
+pre {
+  white-space: pre-wrap;
+  background: #0f172a;
+  color: #e2e8f0;
+  padding: 14px;
+  border-radius: 12px;
+  overflow: auto;
+}
+
+.filterGrid, .graphFilters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 12px;
+  margin: 12px 0;
+}
+
+.filterGrid label, .graphFilters label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: #52627a;
+  font-size: 13px;
+}
+
+.checkLabel {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px !important;
+  padding-top: 25px;
+}
+
+.checkLabel input {
+  width: auto;
+}
+
+.graphPanel {
+  min-height: 680px;
+}
+
+.graphToolbar .search {
+  flex: 1 1 320px;
+  width: auto;
+  margin: 0;
+}
+
+.pathBox {
+  border: 1px solid #f5c46b;
+  background: #fff7ed;
+  color: #7c2d12;
+  border-radius: 12px;
+  padding: 10px 12px;
+  margin: 10px 0 14px 0;
+  word-break: break-word;
+}
+
+.graphLayout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 330px;
+  gap: 12px;
+}
+
+.graphCanvas {
+  min-height: 620px;
+  border: 1px solid #d9e0ec;
+  border-radius: 14px;
+  background: #ffffff;
+}
+
+.nodeDetails {
+  border: 1px solid #d9e0ec;
+  border-radius: 14px;
+  background: #f8fafc;
+  padding: 12px;
+  max-height: 620px;
+  overflow: auto;
+}
+
+.nodeDetails p {
+  word-break: break-word;
+}
+
+@media (max-width: 1100px) {
+  .graphLayout {
+    grid-template-columns: 1fr;
+  }
+}
